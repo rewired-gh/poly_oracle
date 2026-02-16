@@ -3,21 +3,28 @@
 
 # Polymarket API configuration
 polymarket:
-  api_base_url: "https://gamma-api.polymarket.com"
-  poll_interval: 5m                                  # How often to poll for updates
+  gamma_api_url: "https://gamma-api.polymarket.com"
+  clob_api_url: "https://clob.polymarket.com"
+  poll_interval: 1h                                  # Poll every hour for hourly notifications
   categories:                                        # Event categories to monitor
-    - politics
-    - sports
-    - crypto
-    - entertainment
-  timeout: 30s                                       # API request timeout
+    - tech
+    - finance
+    - geopolitics
+  # Volume filtering (logical OR): Include event if ANY volume threshold is met
+  # Set to 0 to disable filtering for that timeframe
+  volume_24hr_min: 10000.0      # Minimum $10K 24-hour volume
+  volume_1wk_min: 50000.0       # Minimum $50K 1-week volume
+  volume_1mo_min: 200000.0      # Minimum $200K 1-month volume
+  volume_filter_or: true        # true = OR (union), false = AND (intersection)
+  limit: 100                    # Maximum events to fetch per cycle
+  timeout: 30s                  # API request timeout
 
 # Monitoring behavior configuration
 monitor:
-  threshold: 0.10        # Minimum change magnitude (0.10 = 10%)
-  window: 1h             # Time window for change detection
-  top_k: 10              # Number of top events to include in notification
-  enabled: true          # Enable/disable monitoring
+  threshold: 0.05        # 5% change threshold (sensitive enough for 0-5 events/hour)
+  window: 1h             # 1-hour time window (matches poll interval)
+  top_k: 5               # Max 5 events per notification (0-5 range, avg 3)
+  enabled: true          # Enable monitoring
 
 # Telegram notification configuration
 telegram:
@@ -28,9 +35,9 @@ telegram:
 # Storage and persistence configuration
 storage:
   max_events: 1000                          # Maximum events to track in memory
-  max_snapshots_per_event: 100              # Maximum snapshots per event before rotation
+  max_snapshots_per_event: 24               # 24 hours of hourly snapshots
   max_file_size_mb: 100                     # Maximum persistence file size in MB
-  persistence_interval: 5m                  # How often to save to disk
+  persistence_interval: 1h                  # Save to disk every hour (matches poll interval)
   file_path: "./data/poly-oracle.json"      # Path to persistence file
   data_dir: "./data"                        # Directory for data storage
 
@@ -42,4 +49,5 @@ logging:
 # Environment variables can override any value:
 # POLY_ORACLE_TELEGRAM_BOT_TOKEN=your_token
 # POLY_ORACLE_TELEGRAM_CHAT_ID=your_chat_id
-# POLY_ORACLE_MONITOR_THRESHOLD=0.15
+# POLY_ORACLE_MONITOR_THRESHOLD=0.10
+

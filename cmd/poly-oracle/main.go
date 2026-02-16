@@ -53,7 +53,8 @@ func main() {
 
 	// Initialize Polymarket client
 	polyClient := polymarket.NewClient(
-		cfg.Polymarket.APIBaseURL,
+		cfg.Polymarket.GammaAPIURL,
+		cfg.Polymarket.CLOBAPIURL,
 		cfg.Polymarket.Timeout,
 	)
 
@@ -146,7 +147,15 @@ func runMonitoringCycle(
 	log.Println("Starting monitoring cycle")
 
 	// Fetch events from Polymarket
-	events, err := polyClient.FetchEvents(ctx, cfg.Polymarket.Categories)
+	events, err := polyClient.FetchEvents(
+		ctx,
+		cfg.Polymarket.Categories,
+		cfg.Polymarket.Volume24hrMin,
+		cfg.Polymarket.Volume1wkMin,
+		cfg.Polymarket.Volume1moMin,
+		cfg.Polymarket.VolumeFilterOR,
+		cfg.Polymarket.Limit,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to fetch events: %w", err)
 	}
@@ -212,7 +221,7 @@ func runMonitoringCycle(
 	// Get top K changes and send notifications
 	if len(changes) > 0 && cfg.Telegram.Enabled && telegramClient != nil {
 		topChanges := mon.RankChanges(changes, cfg.Monitor.TopK)
-		
+
 		if err := telegramClient.Send(topChanges); err != nil {
 			log.Printf("Failed to send Telegram notification: %v", err)
 		} else {

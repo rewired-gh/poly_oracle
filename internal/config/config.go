@@ -18,10 +18,16 @@ type Config struct {
 
 // PolymarketConfig holds Polymarket API configuration
 type PolymarketConfig struct {
-	APIBaseURL   string        `mapstructure:"api_base_url"`
-	PollInterval time.Duration `mapstructure:"poll_interval"`
-	Categories   []string      `mapstructure:"categories"`
-	Timeout      time.Duration `mapstructure:"timeout"`
+	GammaAPIURL    string        `mapstructure:"gamma_api_url"`
+	CLOBAPIURL     string        `mapstructure:"clob_api_url"`
+	PollInterval   time.Duration `mapstructure:"poll_interval"`
+	Categories     []string      `mapstructure:"categories"`
+	Volume24hrMin  float64       `mapstructure:"volume_24hr_min"`
+	Volume1wkMin   float64       `mapstructure:"volume_1wk_min"`
+	Volume1moMin   float64       `mapstructure:"volume_1mo_min"`
+	VolumeFilterOR bool          `mapstructure:"volume_filter_or"` // true = OR (union), false = AND (intersection)
+	Limit          int           `mapstructure:"limit"`
+	Timeout        time.Duration `mapstructure:"timeout"`
 }
 
 // MonitorConfig holds monitoring behavior configuration
@@ -86,8 +92,14 @@ func Load(path string) (*Config, error) {
 // setDefaults configures default values for all configuration options
 func setDefaults(v *viper.Viper) {
 	// Polymarket defaults
-	v.SetDefault("polymarket.api_base_url", "https://gamma-api.polymarket.com")
+	v.SetDefault("polymarket.gamma_api_url", "https://gamma-api.polymarket.com")
+	v.SetDefault("polymarket.clob_api_url", "https://clob.polymarket.com")
 	v.SetDefault("polymarket.poll_interval", "5m")
+	v.SetDefault("polymarket.volume_24hr_min", 0.0)   // 0 = no filter
+	v.SetDefault("polymarket.volume_1wk_min", 0.0)    // 0 = no filter
+	v.SetDefault("polymarket.volume_1mo_min", 0.0)    // 0 = no filter
+	v.SetDefault("polymarket.volume_filter_or", true) // true = OR (union), false = AND (intersection)
+	v.SetDefault("polymarket.limit", 100)
 	v.SetDefault("polymarket.timeout", "30s")
 
 	// Monitor defaults
@@ -112,14 +124,29 @@ func setDefaults(v *viper.Viper) {
 // Validate checks that all configuration values are valid
 func (c *Config) Validate() error {
 	// Validate Polymarket config
-	if c.Polymarket.APIBaseURL == "" {
-		return fmt.Errorf("polymarket.api_base_url is required")
+	if c.Polymarket.GammaAPIURL == "" {
+		return fmt.Errorf("polymarket.gamma_api_url is required")
+	}
+	if c.Polymarket.CLOBAPIURL == "" {
+		return fmt.Errorf("polymarket.clob_api_url is required")
 	}
 	if c.Polymarket.PollInterval < 1*time.Minute {
 		return fmt.Errorf("polymarket.poll_interval must be at least 1 minute")
 	}
 	if len(c.Polymarket.Categories) == 0 {
 		return fmt.Errorf("polymarket.categories must contain at least one category")
+	}
+	if c.Polymarket.Volume24hrMin < 0 {
+		return fmt.Errorf("polymarket.volume_24hr_min must not be negative")
+	}
+	if c.Polymarket.Volume1wkMin < 0 {
+		return fmt.Errorf("polymarket.volume_1wk_min must not be negative")
+	}
+	if c.Polymarket.Volume1moMin < 0 {
+		return fmt.Errorf("polymarket.volume_1mo_min must not be negative")
+	}
+	if c.Polymarket.Limit < 1 || c.Polymarket.Limit > 1000 {
+		return fmt.Errorf("polymarket.limit must be between 1 and 1000")
 	}
 
 	// Validate Monitor config

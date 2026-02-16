@@ -9,108 +9,372 @@ import (
 	"time"
 )
 
-func TestFetchEvents(t *testing.T) {
-	// Create mock server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestFetchEvents_RealAPIFormat(t *testing.T) {
+	// Create a mock server that returns data in real Polymarket API format
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request parameters
 		if r.URL.Path != "/events" {
-			t.Errorf("Expected /events, got %s", r.URL.Path)
+			t.Errorf("Expected path /events, got %s", r.URL.Path)
 		}
 
-		response := struct {
-			Events []PolymarketEvent `json:"events"`
-		}{
-			Events: []PolymarketEvent{
-				{
-					ID:          "event-1",
-					Question:    "Will X happen?",
-					Category:    "politics",
-					Active:      true,
-					Description: "Test event",
-					Markets: []Market{
-						{
-							ID:            "market-1",
-							EventID:       "event-1",
-							Outcome:       "Yes",
-							OutcomePrices: []string{"0.75"},
-						},
-						{
-							ID:            "market-2",
-							EventID:       "event-1",
-							Outcome:       "No",
-							OutcomePrices: []string{"0.25"},
-						},
+		// Check query parameters
+		query := r.URL.Query()
+		if query.Get("active") != "true" {
+			t.Errorf("Expected active=true, got %s", query.Get("active"))
+		}
+		if query.Get("closed") != "false" {
+			t.Errorf("Expected closed=false, got %s", query.Get("closed"))
+		}
+
+		// Return mock data in real API format
+		// Note: outcomes and outcomePrices are JSON STRINGS, not arrays
+		events := []PolymarketEvent{
+			{
+				ID:          "event-1",
+				Title:       "Will candidate X win the election?",
+				Description: "Test event description",
+				Category:    "politics",
+				Subcategory: "elections",
+				Active:      true,
+				Closed:      false,
+				Volume24hr:  50000.0,
+				Volume1wk:   350000.0,
+				Volume1mo:   1500000.0,
+				Liquidity:   100000.0,
+				Markets: []PolymarketMarket{
+					{
+						ID:            "market-1",
+						ConditionID:   "condition-1",
+						Question:      "Will candidate X win?",
+						Outcomes:      "[\"Yes\", \"No\"]",
+						OutcomePrices: "[\"0.75\", \"0.25\"]",
+						ClobTokenIds:  "[\"token1\", \"token2\"]",
+					},
+				},
+			},
+			{
+				ID:          "event-2",
+				Title:       "Will team Y win the championship?",
+				Description: "Sports event",
+				Category:    "sports",
+				Subcategory: "basketball",
+				Active:      true,
+				Closed:      false,
+				Volume24hr:  25000.0,
+				Volume1wk:   175000.0,
+				Volume1mo:   750000.0,
+				Liquidity:   50000.0,
+				Markets: []PolymarketMarket{
+					{
+						ID:            "market-2",
+						ConditionID:   "condition-2",
+						Question:      "Will team Y win?",
+						Outcomes:      "[\"Yes\", \"No\"]",
+						OutcomePrices: "[\"0.60\", \"0.40\"]",
+						ClobTokenIds:  "[\"token3\", \"token4\"]",
 					},
 				},
 			},
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		json.NewEncoder(w).Encode(events)
 	}))
-	defer server.Close()
+	defer mockServer.Close()
 
-	// Create client
-	client := NewClient(server.URL, 30*time.Second)
+	// Create client with mock server URL
+	client := NewClient(mockServer.URL, "https://clob.polymarket.com", 30*time.Second)
 
-	// Fetch events
-	events, err := client.FetchEvents(context.Background(), []string{"politics"})
+	// Test fetching events
+	ctx := context.Background()
+	events, err := client.FetchEvents(ctx, []string{"politics"}, 0, 0, 0, true, 10)
 	if err != nil {
 		t.Fatalf("FetchEvents failed: %v", err)
 	}
 
+	// Verify results
 	if len(events) != 1 {
-		t.Errorf("Expected 1 event, got %d", len(events))
+		t.Errorf("Expected 1 event (politics category), got %d", len(events))
 	}
 
-	if events[0].ID != "event-1" {
-		t.Errorf("Expected ID event-1, got %s", events[0].ID)
+	event := events[0]
+	if event.ID != "event-1" {
+		t.Errorf("Expected event ID 'event-1', got '%s'", event.ID)
 	}
-
-	if events[0].YesProbability != 0.75 {
-		t.Errorf("Expected yes probability 0.75, got %f", events[0].YesProbability)
+	if event.Title != "Will candidate X win the election?" {
+		t.Errorf("Expected title 'Will candidate X win the election?', got '%s'", event.Title)
+	}
+	if event.Category != "politics" {
+		t.Errorf("Expected category 'politics', got '%s'", event.Category)
+	}
+	if event.YesProbability != 0.75 {
+		t.Errorf("Expected yes probability 0.75, got %f", event.YesProbability)
+	}
+	if event.NoProbability != 0.25 {
+		t.Errorf("Expected no probability 0.25, got %f", event.NoProbability)
+	}
+	if event.Volume24hr != 50000.0 {
+		t.Errorf("Expected volume24hr 50000.0, got %f", event.Volume24hr)
 	}
 }
 
-func TestFetchEventsCategoryFilter(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := struct {
-			Events []PolymarketEvent `json:"events"`
-		}{
-			Events: []PolymarketEvent{
-				{
-					ID:       "event-1",
-					Question: "Politics question?",
-					Category: "politics",
-					Active:   true,
-					Markets:  []Market{},
+func TestFetchEvents_VolumeFilterOR(t *testing.T) {
+	// Create a mock server
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		events := []PolymarketEvent{
+			{
+				ID:         "event-1",
+				Title:      "High 24hr volume",
+				Category:   "politics",
+				Active:     true,
+				Closed:     false,
+				Volume24hr: 50000.0, // Passes vol24hrMin
+				Volume1wk:  1000.0,  // Fails vol1wkMin
+				Volume1mo:  5000.0,  // Fails vol1moMin
+				Markets: []PolymarketMarket{
+					{
+						Outcomes:      "[\"Yes\", \"No\"]",
+						OutcomePrices: "[\"0.5\", \"0.5\"]",
+					},
 				},
-				{
-					ID:       "event-2",
-					Question: "Sports question?",
-					Category: "sports",
-					Active:   true,
-					Markets:  []Market{},
+			},
+			{
+				ID:         "event-2",
+				Title:      "High 1wk volume",
+				Category:   "politics",
+				Active:     true,
+				Closed:     false,
+				Volume24hr: 5000.0,   // Fails vol24hrMin
+				Volume1wk:  350000.0, // Passes vol1wkMin
+				Volume1mo:  10000.0,  // Fails vol1moMin
+				Markets: []PolymarketMarket{
+					{
+						Outcomes:      "[\"Yes\", \"No\"]",
+						OutcomePrices: "[\"0.5\", \"0.5\"]",
+					},
+				},
+			},
+			{
+				ID:         "event-3",
+				Title:      "Low volume all",
+				Category:   "politics",
+				Active:     true,
+				Closed:     false,
+				Volume24hr: 1000.0,  // Fails vol24hrMin
+				Volume1wk:  5000.0,  // Fails vol1wkMin
+				Volume1mo:  10000.0, // Fails vol1moMin
+				Markets: []PolymarketMarket{
+					{
+						Outcomes:      "[\"Yes\", \"No\"]",
+						OutcomePrices: "[\"0.5\", \"0.5\"]",
+					},
 				},
 			},
 		}
-
-		json.NewEncoder(w).Encode(response)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(events)
 	}))
-	defer server.Close()
+	defer mockServer.Close()
 
-	client := NewClient(server.URL, 30*time.Second)
+	client := NewClient(mockServer.URL, "https://clob.polymarket.com", 30*time.Second)
 
-	// Fetch only politics
-	events, err := client.FetchEvents(context.Background(), []string{"politics"})
+	// Test with volume filter OR (union)
+	ctx := context.Background()
+	events, err := client.FetchEvents(ctx, []string{"politics"}, 30000.0, 300000.0, 500000.0, true, 10)
+	if err != nil {
+		t.Fatalf("FetchEvents failed: %v", err)
+	}
+
+	// With OR logic, should get event-1 (passes 24hr) and event-2 (passes 1wk)
+	// event-3 fails all conditions
+	if len(events) != 2 {
+		t.Errorf("Expected 2 events (OR logic), got %d", len(events))
+	}
+}
+
+func TestFetchEvents_VolumeFilterAND(t *testing.T) {
+	// Create a mock server
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		events := []PolymarketEvent{
+			{
+				ID:         "event-1",
+				Title:      "Passes all",
+				Category:   "politics",
+				Active:     true,
+				Closed:     false,
+				Volume24hr: 50000.0,
+				Volume1wk:  350000.0,
+				Volume1mo:  1500000.0,
+				Markets: []PolymarketMarket{
+					{
+						Outcomes:      "[\"Yes\", \"No\"]",
+						OutcomePrices: "[\"0.5\", \"0.5\"]",
+					},
+				},
+			},
+			{
+				ID:         "event-2",
+				Title:      "Fails one",
+				Category:   "politics",
+				Active:     true,
+				Closed:     false,
+				Volume24hr: 5000.0, // Fails 24hr min
+				Volume1wk:  350000.0,
+				Volume1mo:  1500000.0,
+				Markets: []PolymarketMarket{
+					{
+						Outcomes:      "[\"Yes\", \"No\"]",
+						OutcomePrices: "[\"0.5\", \"0.5\"]",
+					},
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(events)
+	}))
+	defer mockServer.Close()
+
+	client := NewClient(mockServer.URL, "https://clob.polymarket.com", 30*time.Second)
+
+	// Test with volume filter AND (intersection)
+	ctx := context.Background()
+	events, err := client.FetchEvents(ctx, []string{"politics"}, 30000.0, 300000.0, 500000.0, false, 10)
+	if err != nil {
+		t.Fatalf("FetchEvents failed: %v", err)
+	}
+
+	// With AND logic, only event-1 passes all conditions
+	if len(events) != 1 {
+		t.Errorf("Expected 1 event (AND logic), got %d", len(events))
+	}
+	if len(events) > 0 && events[0].ID != "event-1" {
+		t.Errorf("Expected event-1, got %s", events[0].ID)
+	}
+}
+
+func TestFetchEvents_MultiMarketMaxProbability(t *testing.T) {
+	// Test that multi-market events select max probability
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		events := []PolymarketEvent{
+			{
+				ID:         "event-1",
+				Title:      "Multi-market event",
+				Category:   "politics",
+				Active:     true,
+				Closed:     false,
+				Volume24hr: 50000.0,
+				Markets: []PolymarketMarket{
+					{
+						ID:            "market-1",
+						Question:      "Market 1",
+						Outcomes:      "[\"Yes\", \"No\"]",
+						OutcomePrices: "[\"0.60\", \"0.40\"]", // Yes=0.60
+					},
+					{
+						ID:            "market-2",
+						Question:      "Market 2",
+						Outcomes:      "[\"Yes\", \"No\"]",
+						OutcomePrices: "[\"0.75\", \"0.25\"]", // Yes=0.75 (max)
+					},
+					{
+						ID:            "market-3",
+						Question:      "Market 3",
+						Outcomes:      "[\"Yes\", \"No\"]",
+						OutcomePrices: "[\"0.55\", \"0.45\"]", // Yes=0.55
+					},
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(events)
+	}))
+	defer mockServer.Close()
+
+	client := NewClient(mockServer.URL, "https://clob.polymarket.com", 30*time.Second)
+
+	ctx := context.Background()
+	events, err := client.FetchEvents(ctx, []string{"politics"}, 0, 0, 0, true, 10)
 	if err != nil {
 		t.Fatalf("FetchEvents failed: %v", err)
 	}
 
 	if len(events) != 1 {
-		t.Errorf("Expected 1 event, got %d", len(events))
+		t.Fatalf("Expected 1 event, got %d", len(events))
 	}
 
-	if events[0].Category != "politics" {
-		t.Errorf("Expected category politics, got %s", events[0].Category)
+	// Should select max Yes probability (0.75) and max No probability (0.45)
+	if events[0].YesProbability != 0.75 {
+		t.Errorf("Expected max yes probability 0.75, got %f", events[0].YesProbability)
+	}
+	if events[0].NoProbability != 0.45 {
+		t.Errorf("Expected max no probability 0.45, got %f", events[0].NoProbability)
+	}
+}
+
+func TestParseMarketProbabilities(t *testing.T) {
+	tests := []struct {
+		name        string
+		market      PolymarketMarket
+		expectedYes float64
+		expectedNo  float64
+		expectError bool
+	}{
+		{
+			name: "Valid Yes/No market",
+			market: PolymarketMarket{
+				Outcomes:      "[\"Yes\", \"No\"]",
+				OutcomePrices: "[\"0.75\", \"0.25\"]",
+			},
+			expectedYes: 0.75,
+			expectedNo:  0.25,
+			expectError: false,
+		},
+		{
+			name: "Reversed order",
+			market: PolymarketMarket{
+				Outcomes:      "[\"No\", \"Yes\"]",
+				OutcomePrices: "[\"0.25\", \"0.75\"]",
+			},
+			expectedYes: 0.75,
+			expectedNo:  0.25,
+			expectError: false,
+		},
+		{
+			name: "Invalid outcomes JSON",
+			market: PolymarketMarket{
+				Outcomes:      "not valid json",
+				OutcomePrices: "[\"0.75\", \"0.25\"]",
+			},
+			expectError: true,
+		},
+		{
+			name: "Invalid prices JSON",
+			market: PolymarketMarket{
+				Outcomes:      "[\"Yes\", \"No\"]",
+				OutcomePrices: "not valid json",
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			yes, no, err := parseMarketProbabilities(tt.market)
+			if tt.expectError {
+				if err == nil {
+					t.Error("Expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+				}
+				if yes != tt.expectedYes {
+					t.Errorf("Expected yes=%f, got %f", tt.expectedYes, yes)
+				}
+				if no != tt.expectedNo {
+					t.Errorf("Expected no=%f, got %f", tt.expectedNo, no)
+				}
+			}
+		})
 	}
 }

@@ -166,31 +166,165 @@ func (s *Storage) Load() error {
 - **Gamma API** (`https://gamma-api.polymarket.com`): Event discovery, metadata, categories
 - **CLOB API** (`https://clob.polymarket.com`): Real-time prices and orderbook data
 
-### Data Structure (Research-based)
+### Base URLs
+- Gamma API: `https://gamma-api.polymarket.com`
+- CLOB API: `https://clob.polymarket.com`
+
+### Authentication
+- **None required** for public data endpoints (Gamma API events, CLOB API prices)
+
+### Data Structure (Real API - Research-based)
+
+#### Events Endpoint
+```
+GET https://gamma-api.polymarket.com/events
+```
+
+**Query Parameters:**
+- `active` - boolean filter (true/false)
+- `closed` - boolean filter (true/false)
+- `order` - field to sort by (e.g., `volume24hr`, `volume1wk`, `volume1mo`, `liquidity`)
+- `ascending` - boolean for sort direction (false = descending)
+- `limit` - maximum number of results
+- `offset` - pagination offset
+- `tag_id` - filter by tag ID (integer)
+- `tag_slug` - filter by tag slug (string)
+- `liquidity_min` / `liquidity_max` - numeric range
+- `volume_min` / `volume_max` - numeric range
+
+**Response Format:** JSON array of Event objects (direct array, NOT wrapped)
+
+**Event Fields:**
 ```go
 type PolymarketEvent struct {
-    ID          string  `json:"id"`
-    Question    string  `json:"question"`
-    Description string  `json:"description"`
-    Category    string  `json:"category"`
-    Active      bool    `json:"active"`
+    ID           string    `json:"id"`
+    Ticker       string    `json:"ticker"`
+    Slug         string    `json:"slug"`
+    Title        string    `json:"title"`        // Event title/question
+    Subtitle     string    `json:"subtitle"`
+    Description  string    `json:"description"`
+    Category     string    `json:"category"`
+    Subcategory  string    `json:"subcategory"`
+    Active       bool      `json:"active"`
+    Closed       bool      `json:"closed"`
+    Archived     bool      `json:"archived"`
+    Featured     bool      `json:"featured"`
+
+    // Volume metrics
+    Volume       float64   `json:"volume"`       // Total volume
+    Volume24hr   float64   `json:"volume24hr"`   // 24-hour volume
+    Volume1wk    float64   `json:"volume1wk"`    // 1-week volume
+    Volume1mo    float64   `json:"volume1mo"`    // 1-month volume
+    Volume1yr    float64   `json:"volume1yr"`    // 1-year volume
+
+    // Other metrics
+    Liquidity    float64   `json:"liquidity"`
+    OpenInterest float64   `json:"openInterest"`
+
+    // Date fields
+    StartDate    *time.Time `json:"startDate"`
+    EndDate      *time.Time `json:"endDate"`
+    ClosedTime   *time.Time `json:"closedTime"`
+
+    // Nested market data
+    Markets      []Market  `json:"markets"`      // One event can have multiple markets
+
+    // Related entities
+    Tags         []Tag     `json:"tags"`
+    Categories   []Category `json:"categories"`
+    Series       *Series   `json:"series"`
 }
 
-type PolymarketMarket struct {
-    ID        string  `json:"id"`
-    EventID   string  `json:"event_id"`
-    Outcome   string  `json:"outcome"`  // "Yes" or "No"
-    Price     float64 `json:"price"`    // Probability (0.0-1.0)
+type Market struct {
+    ID             string   `json:"id"`
+    ConditionID    string   `json:"condition_id"`
+    Question       string   `json:"question"`
+    Slug           string   `json:"slug"`
+    Outcomes       []string `json:"outcomes"`       // e.g., ["Yes", "No"]
+    OutcomePrices  []string `json:"outcome_prices"` // Prices as strings, maps 1:1 with outcomes
+    ClobTokenIds   []string `json:"clobTokenIds"`   // Token IDs for CLOB API queries
+    Active         bool     `json:"active"`
+    Closed         bool     `json:"closed"`
 }
+```
+
+**Key Insight:** One event can have multiple markets. When calculating probability changes, we need to:
+1. For each market within an event, calculate the change
+2. Select the maximum change across all markets for that event
+3. Use that maximum change for ranking and notification
+
+#### CLOB API Endpoints
+
+**Get Price:**
+```
+GET https://clob.polymarket.com/price?token_id={clobTokenId}&side=buy
+```
+
+**Get Orderbook:**
+```
+GET https://clob.polymarket.com/book?token_id={clobTokenId}
+```
+
+**Price Response:**
+```json
+{
+  "price": "0.75"
+}
+```
+
+**Price History:**
+```
+GET https://clob.polymarket.com/history?token_id={clobTokenId}&interval={interval}
+```
+
+### Filtering Strategy (Per Requirements)
+
+The service must filter events in this specific order:
+
+1. **Filter by Categories**
+   - Use `tag_id` or `tag_slug` parameter
+   - User can configure which categories/tags to monitor
+   - Example: `?tag_slug=politics&active=true&closed=false`
+
+2. **Top K by Volume (Logical OR)**
+   - Fetch events and check volume metrics: `volume24hr` OR `volume1wk` OR `volume1mo`
+   - **Logical OR**: Include event if ANY of the volume fields meets the threshold
+   - This means: `volume24hr >= threshold OR volume1wk >= threshold OR volume1mo >= threshold`
+   - Sort by the highest volume field for each event
+   - User can configure volume thresholds for each field OR use top K limit
+   - Example approach:
+     - Fetch events sorted by one volume field (e.g., `?order=volume24hr&ascending=false&limit=200`)
+     - Apply logical OR filter on client side: include if any volume field is significant
+     - Take top K events that satisfy the OR condition
+
+3. **Top K by Drastic Changes**
+   - This is implemented in our change detection algorithm
+   - After filtering by categories and volume, we monitor those events
+   - Detect probability changes over time
+   - Rank by magnitude of change
+   - Select top K events with highest changes
+
+### Example API Calls
+
+**Fetch active politics events sorted by 24hr volume:**
+```bash
+curl "https://gamma-api.polymarket.com/events?tag_slug=politics&active=true&closed=false&order=volume24hr&ascending=false&limit=50"
+```
+
+**Get current price for a market:**
+```bash
+curl "https://clob.polymarket.com/price?token_id=12345&side=buy"
 ```
 
 ### Rate Limits
 - Not explicitly documented
 - Conservative approach: 1 request per second per endpoint
-- Implement exponential backoff on rate limit errors
+- Implement exponential backoff on rate limit errors (429 status)
 
 ### References
-- [Polymarket Documentation](https://docs.polymarket.com/quickstart/overview)
+- [Polymarket Events API Documentation](https://docs.polymarket.com/api-reference/events)
+- [Polymarket CLOB API Documentation](https://docs.polymarket.com/developers/CLOB)
+- [Polymarket Quickstart Guide](https://docs.polymarket.com/quickstart/fetching-data)
 
 ---
 

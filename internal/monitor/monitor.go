@@ -56,7 +56,7 @@ func (m *Monitor) DetectChanges(events []models.Event, threshold float64, window
 			changeRecord := models.Change{
 				ID:             uuid.New().String(),
 				EventID:        event.ID,
-				EventQuestion:  event.Question,
+				EventQuestion:  event.Title,
 				Magnitude:      change,
 				Direction:      direction,
 				OldProbability: oldest.YesProbability,

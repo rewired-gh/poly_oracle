@@ -17,22 +17,37 @@ Represents a prediction market event being monitored from Polymarket.
 
 **Fields**:
 - `ID` (string, required): Unique identifier from Polymarket
-- `Question` (string, required): Event question/title
+- `Title` (string, required): Event title/question
 - `Description` (string, optional): Detailed description
 - `Category` (string, required): Event category (politics, sports, crypto, etc.)
-- `YesProbability` (float64, required): Current "Yes" probability (0.0-1.0)
-- `NoProbability` (float64, required): Current "No" probability (0.0-1.0)
+- `Subcategory` (string, optional): Event subcategory
+- `YesProbability` (float64, required): Current "Yes" probability (0.0-1.0) - maximum across all markets
+- `NoProbability` (float64, required): Current "No" probability (0.0-1.0) - maximum across all markets
+- `Volume24hr` (float64, required): 24-hour trading volume
+- `Volume1wk` (float64, required): 1-week trading volume
+- `Volume1mo` (float64, required): 1-month trading volume
+- `Liquidity` (float64, required): Current liquidity
 - `Active` (bool, required): Whether event is still active
+- `Closed` (bool, required): Whether event is closed
 - `LastUpdated` (time.Time, required): Last update timestamp
 - `CreatedAt` (time.Time, required): When event was first tracked
 
+**Multi-Market Handling**:
+Per Polymarket API, one event can have multiple markets. The service must:
+1. For each event, examine all associated markets
+2. Calculate probability changes for each market independently
+3. Select the **maximum change magnitude** across all markets for that event
+4. Use that maximum change for ranking and notification purposes
+
 **Validation Rules**:
 - `ID` must not be empty
-- `Question` must not be empty
+- `Title` must not be empty
 - `Category` must be in configured allowed categories
 - `YesProbability` must be between 0.0 and 1.0
 - `NoProbability` must be between 0.0 and 1.0
 - `YesProbability + NoProbability` should approximately equal 1.0 (within tolerance)
+- `Volume24hr`, `Volume1wk`, `Volume1mo` must be >= 0
+- `Liquidity` must be >= 0
 - `LastUpdated` must be <= current time
 - `CreatedAt` must be <= `LastUpdated`
 
@@ -117,9 +132,15 @@ Represents the user configuration for monitoring behavior.
 - `Logging` (LoggingConfig, required): Logging configuration
 
 #### PolymarketConfig
-- `APIBaseURL` (string, required): Base URL for Polymarket API
+- `GammaAPIURL` (string, required): Base URL for Polymarket Gamma API (default: "https://gamma-api.polymarket.com")
+- `CLOBAPIURL` (string, required): Base URL for Polymarket CLOB API (default: "https://clob.polymarket.com")
 - `PollInterval` (time.Duration, required): How often to poll for updates
-- `Categories` ([]string, required): Event categories to monitor
+- `Categories` ([]string, required): Event categories/tags to monitor (e.g., ["politics", "sports", "crypto"])
+- `Volume24hrMin` (float64, optional): Minimum 24-hour volume threshold (default: 0 = no filter)
+- `Volume1wkMin` (float64, optional): Minimum 1-week volume threshold (default: 0 = no filter)
+- `Volume1moMin` (float64, optional): Minimum 1-month volume threshold (default: 0 = no filter)
+- `VolumeFilterLogic` (string, required): "or" for union (any condition) or "and" for intersection (all conditions) (default: "or")
+- `Limit` (int, required): Maximum number of events to fetch from API (default: 100)
 - `Timeout` (time.Duration, optional): API request timeout (default: 30s)
 
 #### MonitorConfig
@@ -146,9 +167,15 @@ Represents the user configuration for monitoring behavior.
 - `Format` (string, required): Log format (json, text)
 
 **Validation Rules**:
-- `Polymarket.APIBaseURL` must be valid URL
+- `Polymarket.GammaAPIURL` must be valid URL
+- `Polymarket.CLOBAPIURL` must be valid URL
 - `Polymarket.PollInterval` must be >= 1 minute
 - `Polymarket.Categories` must contain at least one category
+- `Polymarket.Volume24hrMin` must be >= 0
+- `Polymarket.Volume1wkMin` must be >= 0
+- `Polymarket.Volume1moMin` must be >= 0
+- `Polymarket.VolumeFilterLogic` must be "or" or "and"
+- `Polymarket.Limit` must be >= 1 and <= 1000
 - `Monitor.Threshold` must be between 0.0 and 1.0
 - `Monitor.Window` must be >= 1 minute
 - `Monitor.TopK` must be >= 1

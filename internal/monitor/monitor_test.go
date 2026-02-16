@@ -17,7 +17,7 @@ func TestDetectChanges(t *testing.T) {
 	now := time.Now()
 	event := models.Event{
 		ID:             "event-1",
-		Question:       "Will X happen?",
+		Title:          "Will X happen?",
 		Category:       "politics",
 		YesProbability: 0.75,
 		NoProbability:  0.25,
@@ -146,7 +146,7 @@ func TestDetectChanges_BelowThreshold(t *testing.T) {
 	now := time.Now()
 	event := models.Event{
 		ID:             "event-1",
-		Question:       "Test?",
+		Title:          "Test?",
 		Category:       "politics",
 		YesProbability: 0.65,
 		NoProbability:  0.35,

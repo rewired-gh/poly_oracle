@@ -11,11 +11,11 @@ import (
 
 func TestStorage_AddAndGetEvent(t *testing.T) {
 	s := New(100, 50, "/tmp/test-storage.json")
-	
+
 	now := time.Now()
 	event := &models.Event{
 		ID:             "test-1",
-		Question:       "Test question?",
+		Title:          "Test question?",
 		Category:       "politics",
 		YesProbability: 0.75,
 		NoProbability:  0.25,
@@ -42,12 +42,12 @@ func TestStorage_AddAndGetEvent(t *testing.T) {
 
 func TestStorage_AddSnapshot(t *testing.T) {
 	s := New(100, 50, "/tmp/test-storage.json")
-	
+
 	// Add event first
 	now := time.Now()
 	event := &models.Event{
 		ID:             "event-1",
-		Question:       "Test?",
+		Title:          "Test?",
 		Category:       "politics",
 		YesProbability: 0.75,
 		NoProbability:  0.25,
@@ -156,7 +156,7 @@ func TestStorage_RotateSnapshots(t *testing.T) {
 	now := time.Now()
 	event := &models.Event{
 		ID:             "event-1",
-		Question:       "Test?",
+		Title:          "Test?",
 		Category:       "politics",
 		YesProbability: 0.75,
 		NoProbability:  0.25,
@@ -203,7 +203,7 @@ func TestStorage_SaveAndLoad(t *testing.T) {
 	now := time.Now()
 	event := &models.Event{
 		ID:             "event-1",
-		Question:       "Test?",
+		Title:          "Test?",
 		Category:       "politics",
 		YesProbability: 0.75,
 		NoProbability:  0.25,
@@ -232,7 +232,7 @@ func TestStorage_SaveAndLoad(t *testing.T) {
 		t.Fatalf("GetEvent after load failed: %v", err)
 	}
 
-	if loaded.Question != "Test?" {
-		t.Errorf("Expected question 'Test?', got '%s'", loaded.Question)
+	if loaded.Title != "Test?" {
+		t.Errorf("Expected question 'Test?', got '%s'", loaded.Title)
 	}
 }

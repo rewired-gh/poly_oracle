@@ -15,7 +15,7 @@ func TestEventValidate(t *testing.T) {
 			name: "valid event",
 			event: Event{
 				ID:             "event-123",
-				Question:       "Will X happen?",
+				Title:          "Will X happen?",
 				Category:       "politics",
 				YesProbability: 0.75,
 				NoProbability:  0.25,
@@ -28,7 +28,7 @@ func TestEventValidate(t *testing.T) {
 		{
 			name: "empty ID",
 			event: Event{
-				Question:       "Will X happen?",
+				Title:          "Will X happen?",
 				Category:       "politics",
 				YesProbability: 0.75,
 				NoProbability:  0.25,
@@ -49,7 +49,7 @@ func TestEventValidate(t *testing.T) {
 			name: "invalid yes probability",
 			event: Event{
 				ID:             "event-123",
-				Question:       "Will X happen?",
+				Title:          "Will X happen?",
 				Category:       "politics",
 				YesProbability: 1.5,
 				NoProbability:  0.25,
@@ -60,7 +60,7 @@ func TestEventValidate(t *testing.T) {
 			name: "probabilities don't sum to 1",
 			event: Event{
 				ID:             "event-123",
-				Question:       "Will X happen?",
+				Title:          "Will X happen?",
 				Category:       "politics",
 				YesProbability: 0.5,
 				NoProbability:  0.6,

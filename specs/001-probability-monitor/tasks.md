@@ -81,7 +81,27 @@ Where:
 
 **Priority**: P1 - Core value proposition, MVP functionality
 
-### Polymarket Client
+### API Fix Tasks (CRITICAL - Real Polymarket API) ✅ COMPLETE
+
+- [x] T076 Fix PolymarketClient to use real Gamma API endpoint (https://gamma-api.polymarket.com/events) in internal/polymarket/client.go
+- [x] T077 Update PolymarketEvent struct with real API fields (title, volume24hr, volume1wk, volume1mo, markets array) in internal/polymarket/client.go
+- [x] T078 Fix FetchEvents to parse direct array response (NOT wrapped in {events: []}) in internal/polymarket/client.go
+- [x] T079 Implement multi-market handling: calculate max change across all markets per event in internal/polymarket/client.go
+- [x] T080 Implement logical OR volume filtering (include if ANY volume field meets threshold) in internal/polymarket/client.go
+- [x] T081 Update Event model to include Volume24hr, Volume1wk, Volume1mo, Liquidity fields in internal/models/event.go
+- [x] T082 Update Config to include Volume24hrMin, Volume1wkMin, Volume1moMin thresholds in internal/config/config.go
+- [x] T083 Update main.go to pass volume thresholds to FetchEvents in cmd/poly-oracle/main.go
+- [x] T084 [P] Write integration tests for real Polymarket API in internal/polymarket/client_test.go
+- [x] T085 Test with actual Polymarket API and verify filtering works correctly
+
+### Configuration Tasks (NEW - User Requirements) ✅ COMPLETE
+
+- [x] T086 Create sensible default config for hourly notifications in configs/config.yaml.example
+- [x] T087 Configure event categories: tech, finance, geopolitics in configs/config.yaml.example
+- [x] T088 Configure monitoring to produce 0-5 events per notification (avg 3) in configs/config.yaml.example
+- [x] T089 Update main.go to pass volume thresholds to FetchEvents in cmd/poly-oracle/main.go
+
+### Original Polymarket Client Tasks (COMPLETED BUT NEED FIXES)
 
 - [x] T029 [US1] Define PolymarketClient interface in internal/polymarket/client.go
 - [x] T030 [US1] Implement FetchEvents method in internal/polymarket/client.go using Gamma API

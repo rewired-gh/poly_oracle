@@ -59,8 +59,8 @@ logging:
 	}
 
 	// Verify values
-	if cfg.Polymarket.APIBaseURL != "https://gamma-api.polymarket.com" {
-		t.Errorf("Unexpected API URL: %s", cfg.Polymarket.APIBaseURL)
+	if cfg.Polymarket.GammaAPIURL != "https://gamma-api.polymarket.com" {
+		t.Errorf("Unexpected API URL: %s", cfg.Polymarket.GammaAPIURL)
 	}
 
 	if cfg.Monitor.Threshold != 0.10 {
@@ -87,7 +87,7 @@ func TestValidateErrors(t *testing.T) {
 			name: "missing telegram token when enabled",
 			config: &Config{
 				Polymarket: PolymarketConfig{
-					APIBaseURL:   "https://example.com",
+					GammaAPIURL:  "https://example.com",
 					PollInterval: 5 * 60 * 1000 * 1000 * 1000,
 					Categories:   []string{"politics"},
 				},
@@ -118,7 +118,7 @@ func TestValidateErrors(t *testing.T) {
 			name: "invalid threshold",
 			config: &Config{
 				Polymarket: PolymarketConfig{
-					APIBaseURL:   "https://example.com",
+					GammaAPIURL:  "https://example.com",
 					PollInterval: 5 * 60 * 1000 * 1000 * 1000,
 					Categories:   []string{"politics"},
 				},

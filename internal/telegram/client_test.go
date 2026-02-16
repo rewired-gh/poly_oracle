@@ -3,7 +3,6 @@ package telegram
 import (
 	"testing"
 	"time"
-
 )
 
 func TestFormatDuration(t *testing.T) {
