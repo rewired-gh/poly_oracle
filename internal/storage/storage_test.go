@@ -15,6 +15,7 @@ func TestStorage_AddAndGetEvent(t *testing.T) {
 	now := time.Now()
 	event := &models.Event{
 		ID:             "test-1",
+		EventID:        "test-1",
 		Title:          "Test question?",
 		Category:       "politics",
 		YesProbability: 0.75,
@@ -47,6 +48,7 @@ func TestStorage_AddSnapshot(t *testing.T) {
 	now := time.Now()
 	event := &models.Event{
 		ID:             "event-1",
+		EventID:        "event-1",
 		Title:          "Test?",
 		Category:       "politics",
 		YesProbability: 0.75,
@@ -158,6 +160,7 @@ func TestStorage_RotateSnapshots(t *testing.T) {
 	now := time.Now()
 	event := &models.Event{
 		ID:             "event-1",
+		EventID:        "event-1",
 		Title:          "Test?",
 		Category:       "politics",
 		YesProbability: 0.75,
@@ -224,6 +227,7 @@ func TestStorage_SaveAndLoad(t *testing.T) {
 	now := time.Now()
 	event := &models.Event{
 		ID:             "event-1",
+		EventID:        "event-1",
 		Title:          "Test?",
 		Category:       "politics",
 		YesProbability: 0.75,

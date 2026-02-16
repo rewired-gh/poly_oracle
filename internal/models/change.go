@@ -17,8 +17,11 @@ type Change struct {
 	ID             string        `json:"id"`
 	EventID        string        `json:"event_id"`
 	EventQuestion  string        `json:"event_question"`
-	Magnitude      float64       `json:"magnitude"` // Absolute probability change (0.0 to 1.0)
-	Direction      string        `json:"direction"` // "increase" or "decrease"
+	EventURL       string        `json:"event_url"`       // URL to Polymarket event page
+	MarketID       string        `json:"market_id"`       // Market ID (for multi-market events)
+	MarketQuestion string        `json:"market_question"` // Specific market question (if multi-market)
+	Magnitude      float64       `json:"magnitude"`       // Absolute probability change (0.0 to 1.0)
+	Direction      string        `json:"direction"`       // "increase" or "decrease"
 	OldProbability float64       `json:"old_probability"`
 	NewProbability float64       `json:"new_probability"`
 	TimeWindow     time.Duration `json:"time_window"` // Duration over which change was detected

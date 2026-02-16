@@ -29,6 +29,7 @@ type Client struct {
 type PolymarketEvent struct {
 	ID          string             `json:"id"`
 	Ticker      string             `json:"ticker"`
+	Slug        string             `json:"slug"` // Event slug for URL construction
 	Title       string             `json:"title"`
 	Subtitle    string             `json:"subtitle"`
 	Description string             `json:"description"`
@@ -158,27 +159,6 @@ func (c *Client) FetchEvents(ctx context.Context, categories []string, vol24hrMi
 			}
 		}
 
-		// Extract probabilities from markets
-		// One event can have multiple markets - use the market with highest liquidity/interest
-		// For simplicity, use the first valid market (markets are typically ordered by importance)
-		var selectedYesProb, selectedNoProb float64
-		for _, market := range pe.Markets {
-			yesProb, noProb, err := parseMarketProbabilities(market)
-			if err != nil {
-				continue // Skip invalid markets
-			}
-
-			// Use first valid market's probabilities (they sum to 1.0 within the same market)
-			selectedYesProb = yesProb
-			selectedNoProb = noProb
-			break
-		}
-
-		// Skip events with no valid market data
-		if selectedYesProb == 0 && selectedNoProb == 0 {
-			continue
-		}
-
 		// Extract primary category from tags (first matching tag or first tag overall)
 		primaryCategory := ""
 		if len(pe.Tags) > 0 {
@@ -195,27 +175,52 @@ func (c *Client) FetchEvents(ctx context.Context, categories []string, vol24hrMi
 			}
 		}
 
-		// Capture current time once to ensure CreatedAt <= LastUpdated
-		now := time.Now()
+		// Process each market individually
+		// An event can have multiple markets, and we track each one separately
+		for _, market := range pe.Markets {
+			yesProb, noProb, err := parseMarketProbabilities(market)
+			if err != nil {
+				continue // Skip invalid markets
+			}
 
-		event := models.Event{
-			ID:             pe.ID,
-			Title:          pe.Title,
-			Description:    pe.Description,
-			Category:       primaryCategory, // Use extracted category from tags
-			Subcategory:    pe.Subcategory,
-			YesProbability: selectedYesProb,
-			NoProbability:  selectedNoProb,
-			Volume24hr:     pe.Volume24hr,
-			Volume1wk:      pe.Volume1wk,
-			Volume1mo:      pe.Volume1mo,
-			Liquidity:      pe.Liquidity,
-			Active:         pe.Active && !pe.Closed,
-			LastUpdated:    now,
-			CreatedAt:      now,
+			// Skip markets with no valid probability data
+			if yesProb == 0 && noProb == 0 {
+				continue
+			}
+
+			// Capture current time once to ensure CreatedAt <= LastUpdated
+			now := time.Now()
+
+			// Create composite ID for multi-market tracking
+			// If only one market, use event ID directly; otherwise use "EventID:MarketID"
+			compositeID := pe.ID
+			if len(pe.Markets) > 1 {
+				compositeID = pe.ID + ":" + market.ID
+			}
+
+			event := models.Event{
+				ID:             compositeID,
+				EventID:        pe.ID,
+				MarketID:       market.ID,
+				MarketQuestion: market.Question,
+				Title:          pe.Title,
+				EventURL:       "https://polymarket.com/event/" + pe.Slug,
+				Description:    pe.Description,
+				Category:       primaryCategory,
+				Subcategory:    pe.Subcategory,
+				YesProbability: yesProb,
+				NoProbability:  noProb,
+				Volume24hr:     pe.Volume24hr,
+				Volume1wk:      pe.Volume1wk,
+				Volume1mo:      pe.Volume1mo,
+				Liquidity:      pe.Liquidity,
+				Active:         pe.Active && !pe.Closed,
+				LastUpdated:    now,
+				CreatedAt:      now,
+			}
+
+			events = append(events, event)
 		}
-
-		events = append(events, event)
 	}
 
 	// Return top K after filtering

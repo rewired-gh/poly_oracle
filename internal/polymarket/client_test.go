@@ -109,8 +109,11 @@ func TestFetchEvents_RealAPIFormat(t *testing.T) {
 	}
 
 	event := events[0]
-	if event.ID != "event-1" {
-		t.Errorf("Expected event ID 'event-1', got '%s'", event.ID)
+	if event.EventID != "event-1" {
+		t.Errorf("Expected event ID 'event-1', got '%s'", event.EventID)
+	}
+	if event.ID == "" {
+		t.Errorf("Expected composite ID to be set, got empty string")
 	}
 	if event.Title != "Will candidate X win the election?" {
 		t.Errorf("Expected title 'Will candidate X win the election?', got '%s'", event.Title)
@@ -283,7 +286,7 @@ func TestFetchEvents_VolumeFilterAND(t *testing.T) {
 }
 
 func TestFetchEvents_MultiMarketMaxProbability(t *testing.T) {
-	// Test that multi-market events use first valid market (probabilities must sum to 1.0 within same market)
+	// Test that multi-market events create separate event entries for each market
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		events := []PolymarketEvent{
 			{
@@ -298,19 +301,19 @@ func TestFetchEvents_MultiMarketMaxProbability(t *testing.T) {
 						ID:            "market-1",
 						Question:      "Market 1",
 						Outcomes:      "[\"Yes\", \"No\"]",
-						OutcomePrices: "[\"0.60\", \"0.40\"]", // Yes=0.60, No=0.40 (sums to 1.0)
+						OutcomePrices: "[\"0.60\", \"0.40\"]", // Yes=0.60, No=0.40
 					},
 					{
 						ID:            "market-2",
 						Question:      "Market 2",
 						Outcomes:      "[\"Yes\", \"No\"]",
-						OutcomePrices: "[\"0.75\", \"0.25\"]", // Would be Yes=0.75 but not used
+						OutcomePrices: "[\"0.75\", \"0.25\"]", // Yes=0.75, No=0.25
 					},
 					{
 						ID:            "market-3",
 						Question:      "Market 3",
 						Outcomes:      "[\"Yes\", \"No\"]",
-						OutcomePrices: "[\"0.55\", \"0.45\"]", // Would be Yes=0.55 but not used
+						OutcomePrices: "[\"0.55\", \"0.45\"]", // Yes=0.55, No=0.45
 					},
 				},
 				Tags: []PolymarketTag{
@@ -333,21 +336,38 @@ func TestFetchEvents_MultiMarketMaxProbability(t *testing.T) {
 		t.Fatalf("FetchEvents failed: %v", err)
 	}
 
-	if len(events) != 1 {
-		t.Fatalf("Expected 1 event, got %d", len(events))
+	// Should get 3 events (one for each market)
+	if len(events) != 3 {
+		t.Fatalf("Expected 3 events (one per market), got %d", len(events))
 	}
 
-	// Should use first valid market's probabilities (they must sum to 1.0)
-	if events[0].YesProbability != 0.60 {
-		t.Errorf("Expected yes probability 0.60 from first market, got %f", events[0].YesProbability)
+	// Verify each market is tracked separately
+	// All should have same EventID but different MarketIDs and composite IDs
+	if events[0].EventID != "event-1" || events[1].EventID != "event-1" || events[2].EventID != "event-1" {
+		t.Errorf("All events should have EventID 'event-1'")
 	}
-	if events[0].NoProbability != 0.40 {
-		t.Errorf("Expected no probability 0.40 from first market, got %f", events[0].NoProbability)
+
+	// Check composite IDs are unique
+	ids := make(map[string]bool)
+	for _, event := range events {
+		if ids[event.ID] {
+			t.Errorf("Duplicate composite ID: %s", event.ID)
+		}
+		ids[event.ID] = true
 	}
-	// Verify probabilities sum to 1.0 (within tolerance)
-	sum := events[0].YesProbability + events[0].NoProbability
-	if sum < 0.99 || sum > 1.01 {
-		t.Errorf("Probabilities should sum to ~1.0, got %f", sum)
+
+	// Verify each market has correct probabilities
+	// Market 1: Yes=0.60, No=0.40
+	if events[0].YesProbability != 0.60 || events[0].NoProbability != 0.40 {
+		t.Errorf("Market 1: Expected (0.60, 0.40), got (%.2f, %.2f)", events[0].YesProbability, events[0].NoProbability)
+	}
+	// Market 2: Yes=0.75, No=0.25
+	if events[1].YesProbability != 0.75 || events[1].NoProbability != 0.25 {
+		t.Errorf("Market 2: Expected (0.75, 0.25), got (%.2f, %.2f)", events[1].YesProbability, events[1].NoProbability)
+	}
+	// Market 3: Yes=0.55, No=0.45
+	if events[2].YesProbability != 0.55 || events[2].NoProbability != 0.45 {
+		t.Errorf("Market 3: Expected (0.55, 0.45), got (%.2f, %.2f)", events[2].YesProbability, events[2].NoProbability)
 	}
 }
 

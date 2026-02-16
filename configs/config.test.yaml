@@ -16,21 +16,20 @@ polymarket:
     - geopolitics
     - tech
     - finance
-    - crypto                                         # Overlaps with tech/finance
-    - world                                          # Global events
+    - world
   # Low volume thresholds for testing - captures more events
-  volume_24hr_min: 5000.0       # $5K minimum (captures ~80-100 events)
-  volume_1wk_min: 25000.0       # $25K weekly
-  volume_1mo_min: 50000.0       # $50K monthly
+  volume_24hr_min: 1000.0       # $1K minimum (captures ~80-100 events)
+  volume_1wk_min: 5000.0        # $5K weekly
+  volume_1mo_min: 10000.0       # $10K monthly
   volume_filter_or: true        # OR logic (union)
   limit: 1000                   # Fetch many events
   timeout: 30s
 
 # Monitoring behavior configuration - very sensitive for testing
 monitor:
-  threshold: 0.01        # 2% change (very sensitive)
+  threshold: 0.01        # 1% change (very sensitive)
   window: 5m             # 5-minute window (matches poll interval)
-  top_k: 20              # Show top 20 events for testing
+  top_k: 5               # Show top 5 events for testing
   enabled: true
 
 # Telegram notification configuration

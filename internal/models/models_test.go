@@ -15,6 +15,7 @@ func TestEventValidate(t *testing.T) {
 			name: "valid event",
 			event: Event{
 				ID:             "event-123",
+				EventID:        "event-123",
 				Title:          "Will X happen?",
 				Category:       "politics",
 				YesProbability: 0.75,

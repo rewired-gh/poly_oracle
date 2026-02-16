@@ -33,6 +33,12 @@ make test-coverage     # Run tests with coverage
 make run               # Build and run with configs/config.yaml
 make fmt               # Format code with gofmt
 make lint              # Run golangci-lint
+make dev               # Development mode with auto-reload (requires entr)
+
+# Analysis tools (for configuration optimization)
+go run ./cmd/experiment         # Analyze categories, volume distribution, probability changes
+go run ./cmd/analyze-categories # Category-specific volume and activity analysis
+go run ./cmd/analyze-refined    # Refined analysis with optimized thresholds
 
 # Deployment
 make docker-build      # Build Docker image
@@ -46,6 +52,7 @@ make clean             # Remove binaries and data directory
 
 - **Viper** (github.com/spf13/viper) - YAML configuration management
 - **Telegram Bot API** (github.com/go-telegram-bot-api/telegram-bot-api/v5) - Telegram notifications
+- **UUID** (github.com/google/uuid) - Unique identifier generation
 
 ## Architecture
 
@@ -62,6 +69,10 @@ Data flow: Poll → Store → Detect Changes → Notify → Persist
 
 ## Configuration
 
+**Default categories**: geopolitics, tech, finance, world
+**Default thresholds**: $25K 24hr / $100K 1wk / $250K 1mo (OR logic)
+**Default monitor threshold**: 4% probability change
+
 Required setup before first run:
 
 1. **Copy example config**: `cp configs/config.yaml.example configs/config.yaml`
@@ -76,6 +87,8 @@ Config file must have:
 - `polymarket.categories` - At least one category to monitor
 
 Environment variable overrides supported: `POLY_ORACLE_*`
+
+**Logging**: Configure verbosity via `logging.level` (debug/info/warn/error) and `logging.format` (json/text) in config.yaml. Use `debug` level for troubleshooting.
 
 ## Testing
 
@@ -133,6 +146,29 @@ make run
 - **Storage path**: Default uses OS tmp dir (/tmp/poly-oracle/data.json)
 - **Categories filter**: Only monitors events in configured categories
 - **Volume filter**: Lower thresholds needed for niche categories (geopolitics/tech/finance)
+- **Telegram MarkdownV2**: Notification messages use MarkdownV2 format with automatic escaping of special characters
+
+## API Quirks
+
+- **Category field often null**: Polymarket API `category` field is frequently null; actual category info is in `tags[]` array (filtering logic uses tag slugs)
+- **Volume filter OR logic**: Events pass if meeting ANY volume threshold ($25K 24hr OR $100K 1wk OR $250K 1mo)
+- **Multi-market event tracking**: Events with multiple markets are tracked separately. Each market creates a unique event entry with composite ID (`EventID:MarketID`). This allows detecting probability changes for each market independently.
+
+## Multi-Market Event Handling
+
+Polymarket events can have multiple markets (e.g., "Will Bitcoin hit $100K?" might have separate markets for different dates). The service tracks each market independently:
+
+- **Composite ID**: `EventID:MarketID` format ensures unique tracking
+- **Market-specific changes**: Probability changes are detected per market
+- **Telegram notifications**: Show which specific market changed (with market question)
+- **URL handling**: All markets share the same event URL
+
+Example: An event "Will Bitcoin hit price targets?" with 3 markets:
+- Market 1: "Will Bitcoin hit $100K by March?" (tracked as `event123:market1`)
+- Market 2: "Will Bitcoin hit $150K by June?" (tracked as `event123:market2`)
+- Market 3: "Will Bitcoin hit $200K by Dec?" (tracked as `event123:market3`)
+
+Each market is monitored separately for probability changes.
 
 ## Code Style
 
