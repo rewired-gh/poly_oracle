@@ -5,7 +5,7 @@
 # Expected: 2-5 high-quality alerts per cycle based on sensitivity.
 
 polymarket:
-  poll_interval: 1h
+  poll_interval: 15m
   limit: 5000
   categories:
     - geopolitics
@@ -18,13 +18,27 @@ polymarket:
   volume_1mo_min: 250000      # $250K minimum monthly volume
 
 monitor:
-  # sensitivity controls signal quality threshold (0.0=permissive, 1.0=strict)
-  # min_score = sensitivity^2 × 0.05
-  #   0.3 → ~5 events/cycle (permissive)
-  #   0.5 → ~2-3 events/cycle (default)
-  #   0.7 → ~0-1 events/cycle (strict)
+  # sensitivity controls the composite signal quality threshold (0.0=permissive, 1.0=strict)
+  # Formula: min_score = sensitivity² × 0.05  (window-agnostic — SNR handles scale)
+  #
+  # Calibration guide (15m polling, typical $25K–$1M volume events):
+  #   0.3 → minScore=0.0045  — catches 3%+ moves on mid-volume markets; noisy
+  #   0.5 → minScore=0.0125  — catches meaningful 5%+ moves; ~2-3 alerts/cycle (recommended)
+  #   0.7 → minScore=0.0245  — strict; only large moves on high-volume markets pass
+  #
+  # Example: a 9% drop at 91%→82% certainty on a $200K market scores ≈ 0.73 (passes at 0.5)
+  # Example: a 0.6% move at near-certainty on a $50K market scores ≈ 0.0005 (filtered at 0.5)
   sensitivity: 0.5
   top_k: 5
+
+  # detection_intervals: how many poll_interval periods form the detection window.
+  # Effective window = (detection_intervals + 1) × poll_interval.
+  # The +1 absorbs per-cycle processing latency so boundary snapshots are never excluded.
+  # Minimum 2 (required for trajectory_consistency to have data).
+  # Higher values: smoother TC signal, detects slower trends, may repeat notifications.
+  # Lower values: more reactive, TC less discriminating.
+  # At 15m polling: 4 → effective 75m window (catches sub-hour trends with good TC discrimination)
+  detection_intervals: 4
 
 telegram:
   bot_token: "YOUR_BOT_TOKEN"   # Get from @BotFather

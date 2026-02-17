@@ -46,6 +46,7 @@ Thumbs.db
 # Logs
 *.log
 logs/
+tmp.txt
 
 # Configuration files with secrets
 configs/config.yaml

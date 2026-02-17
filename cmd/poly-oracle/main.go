@@ -100,8 +100,11 @@ func main() {
 	}()
 
 	// Start monitoring loop
-	logger.Info("Starting monitoring service (interval: %v, sensitivity: %.2f, top_k: %d)",
+	effectiveWindow := time.Duration(cfg.Monitor.DetectionIntervals+1) * cfg.Polymarket.PollInterval
+	logger.Info("Starting monitoring service (interval: %v, detection_intervals: %d, effective_window: %v, sensitivity: %.2f, top_k: %d)",
 		cfg.Polymarket.PollInterval,
+		cfg.Monitor.DetectionIntervals,
+		effectiveWindow,
 		cfg.Monitor.Sensitivity,
 		cfg.Monitor.TopK,
 	)
@@ -116,7 +119,7 @@ func main() {
 
 	// Run initial poll immediately
 	logger.Debug("Running initial monitoring cycle")
-	if err := runMonitoringCycle(ctx, polyClient, mon, store, telegramClient, cfg); err != nil {
+	if err := runMonitoringCycle(ctx, polyClient, mon, store, telegramClient, cfg, time.Now()); err != nil {
 		logger.Error("Monitoring cycle failed: %v", err)
 	}
 
@@ -132,9 +135,9 @@ func main() {
 			logger.Info("Service stopped")
 			return
 
-		case <-ticker.C:
+		case tickTime := <-ticker.C:
 			logger.Debug("Starting scheduled monitoring cycle")
-			if err := runMonitoringCycle(ctx, polyClient, mon, store, telegramClient, cfg); err != nil {
+			if err := runMonitoringCycle(ctx, polyClient, mon, store, telegramClient, cfg, tickTime); err != nil {
 				logger.Error("Monitoring cycle failed: %v", err)
 			}
 
@@ -178,6 +181,7 @@ func runMonitoringCycle(
 	store *storage.Storage,
 	telegramClient *telegram.Client,
 	cfg *config.Config,
+	cycleTime time.Time, // tick time (or startup time for the initial cycle)
 ) error {
 	startTime := time.Now()
 	logger.Info("Starting monitoring cycle")
@@ -224,13 +228,16 @@ func runMonitoringCycle(
 			updatedEvents++
 		}
 
-		// Create snapshot for current probability
+		// Create snapshot for current probability.
+		// Use cycleTime (tick time) as the timestamp, not time.Now() after processing.
+		// This ensures snapshot ages are exact multiples of pollInterval, so the
+		// detection window math is not skewed by per-cycle processing latency.
 		snapshot := &models.Snapshot{
 			ID:             generateID(),
 			EventID:        event.ID,
 			YesProbability: event.YesProbability,
 			NoProbability:  event.NoProbability,
-			Timestamp:      time.Now(),
+			Timestamp:      cycleTime,
 			Source:         "polymarket-gamma-api",
 		}
 
@@ -245,9 +252,15 @@ func runMonitoringCycle(
 	if err != nil {
 		return fmt.Errorf("failed to get events: %w", err)
 	}
-	logger.Debug("Detecting changes across %d total events", len(allEvents))
-
-	changes, detectionErrors, err := mon.DetectChanges(convertEvents(allEvents), cfg.Polymarket.PollInterval+time.Minute)
+	// Window = (N+1) × pollInterval, not N × pollInterval.
+	// With cycleTime-stamped snapshots, the oldest snapshot from N cycles ago is
+	// exactly N×pollInterval old at tick time, but GetSnapshotsInWindow runs after
+	// processing completes (tick + τ), making it N×pollInterval + τ old. The extra
+	// interval absorbs τ so the boundary snapshot is never accidentally excluded.
+	detectionWindow := time.Duration(cfg.Monitor.DetectionIntervals+1) * cfg.Polymarket.PollInterval
+	logger.Debug("Detecting changes across %d total events (window: %v = (%d+1) × %v)",
+		len(allEvents), detectionWindow, cfg.Monitor.DetectionIntervals, cfg.Polymarket.PollInterval)
+	changes, detectionErrors, err := mon.DetectChanges(convertEvents(allEvents), detectionWindow)
 	if err != nil {
 		return fmt.Errorf("failed to detect changes: %w", err)
 	}
@@ -267,12 +280,13 @@ func runMonitoringCycle(
 
 	logger.Info("Detected %d changes above floor", len(changes))
 
-	// Score and rank changes using composite signal quality
-	// Scale threshold by window duration for mathematical soundness
-	windowHours := cfg.Polymarket.PollInterval.Hours()
-	minScore := cfg.Monitor.MinCompositeScore() * windowHours
+	// Score and rank changes using composite signal quality.
+	// The four factors (KL, volume, SNR, trajectory) are already window-agnostic:
+	// SNR normalizes netChange by historical per-interval volatility, so scaling
+	// minScore by window duration is incorrect and creates a near-zero bar at 15m.
+	minScore := cfg.Monitor.MinCompositeScore()
 	eventsMap := buildEventsMap(allEvents)
-	topChanges := mon.ScoreAndRank(changes, eventsMap, minScore, cfg.Monitor.TopK)
+	topChanges := mon.ScoreAndRank(changes, eventsMap, minScore, cfg.Monitor.TopK, cfg.Polymarket.Volume24hrMin)
 
 	if len(topChanges) > 0 {
 		logger.Info("Scored changes: %d detected, %d passed quality bar (min_score=%.4f)",

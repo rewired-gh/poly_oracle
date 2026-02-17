@@ -573,8 +573,8 @@ func TestScoring(t *testing.T) {
 			buildChange("evt-c", 0.60, 0.75, time.Hour),
 		}
 
-		result1 := mon.ScoreAndRank(changes, events, 0.0, 10)
-		result2 := mon.ScoreAndRank(changes, events, 0.0, 10)
+		result1 := mon.ScoreAndRank(changes, events, 0.0, 10, 25000.0)
+		result2 := mon.ScoreAndRank(changes, events, 0.0, 10, 25000.0)
 
 		if len(result1) != len(result2) {
 			t.Fatalf("Determinism: different lengths %d vs %d", len(result1), len(result2))
@@ -606,7 +606,7 @@ func TestScoreAndRank_TopKLimit(t *testing.T) {
 		{ID: "c3", EventID: "e3", OldProbability: 0.50, NewProbability: 0.60, Magnitude: 0.10, Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now()},
 	}
 
-	top := mon.ScoreAndRank(changes, events, 0.0, 2)
+	top := mon.ScoreAndRank(changes, events, 0.0, 2, 25000.0)
 	if len(top) != 2 {
 		t.Errorf("Expected 2 results (k=2), got %d", len(top))
 	}
@@ -616,7 +616,7 @@ func TestScoreAndRank_NeverNil(t *testing.T) {
 	store := storage.New(100, 50, "/tmp/test-rank-nil.json", 0644, 0755)
 	mon := New(store)
 
-	result := mon.ScoreAndRank(nil, map[string]*models.Event{}, 0.0, 5)
+	result := mon.ScoreAndRank(nil, map[string]*models.Event{}, 0.0, 5, 25000.0)
 	if result == nil {
 		t.Error("ScoreAndRank should never return nil, got nil")
 	}
@@ -634,7 +634,7 @@ func TestScoreAndRank_MinScoreFilters(t *testing.T) {
 	}
 
 	// With very high minScore, nothing should pass
-	result := mon.ScoreAndRank(changes, events, 999.0, 5)
+	result := mon.ScoreAndRank(changes, events, 999.0, 5, 25000.0)
 	if len(result) != 0 {
 		t.Errorf("Expected 0 results with minScore=999, got %d", len(result))
 	}
@@ -651,8 +651,422 @@ func TestScoreAndRank_TopKZero(t *testing.T) {
 		{ID: "c1", EventID: "e1", OldProbability: 0.50, NewProbability: 0.70, Magnitude: 0.20, Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now()},
 	}
 
-	result := mon.ScoreAndRank(changes, events, 0.0, 0)
+	result := mon.ScoreAndRank(changes, events, 0.0, 0, 25000.0)
 	if len(result) != 0 {
 		t.Errorf("Expected 0 results when k=0, got %d", len(result))
+	}
+}
+
+// ─── Scenario tests: quality bar calibration ──────────────────────────────────
+//
+// These tests verify the composite score algorithm produces appropriate
+// signal/noise discrimination for two real-world polling configurations.
+// Probability values and volumes are inspired by real 2026-02-17 market data.
+
+// TestScenario_PollInterval5m validates the quality bar at 5m polling
+// (config.test.yaml: sensitivity=0.4, detection_intervals=4 → 20m window,
+// minScore = 0.4² × 0.05 = 0.008).
+//
+// Signals tested:
+//   - SHEIN IPO: 7% probability drop on a $500K-volume market → passes (high-information move)
+//   - Díaz-Canel: 0.4%→0.8% tail move on $10K volume → filtered (tiny, illiquid)
+//   - Podcast market: 8.8% near-certainty drop, noisy history, $30K volume → lower than SHEIN
+func TestScenario_PollInterval5m(t *testing.T) {
+	const sensitivity = 0.4
+	minScore := sensitivity * sensitivity * 0.05 // 0.008
+	const vRef = 25000.0
+
+	// Stable history for high-SNR calculation: tiny alternating noise ≈ σ=0.0015
+	stableHistory := makeSnaps([]float64{0.450, 0.451, 0.449, 0.450, 0.451, 0.449, 0.450, 0.451})
+	// Noisy history for low-SNR: volatile oscillations across 10+ percent
+	noisyHistory := makeSnaps([]float64{0.87, 0.93, 0.81, 0.90, 0.85, 0.92, 0.80, 0.91, 0.84, 0.90})
+
+	// SHEIN IPO: 7% drop from 45% → 38%, $500K daily volume, quiet history
+	t.Run("ValuableSignal_LargeMove_HighVolume", func(t *testing.T) {
+		kl := KLDivergence(0.45, 0.38)
+		vw := LogVolumeWeight(500_000, vRef)
+		snr := HistoricalSNR(stableHistory, 0.45-0.38)
+		score := CompositeScore(kl, vw, snr, 1.0)
+		if score < minScore {
+			t.Errorf("SHEIN 7%% drop: score=%.6f should exceed minScore=%.4f (kl=%.5f, vw=%.3f, snr=%.3f)",
+				score, minScore, kl, vw, snr)
+		}
+	})
+
+	// Díaz-Canel: 0.4%→0.8% tail move, $10K volume — pure noise
+	t.Run("NoiseFiltered_TailMove_LowVolume", func(t *testing.T) {
+		kl := KLDivergence(0.004, 0.008)
+		vw := LogVolumeWeight(10_000, vRef)
+		score := CompositeScore(kl, vw, 1.0, 1.0)
+		if score >= minScore {
+			t.Errorf("Diaz-Canel 0.4→0.8%%%% tail: score=%.6f should be below minScore=%.4f (kl=%.5f, vw=%.3f)",
+				score, minScore, kl, vw)
+		}
+	})
+
+	// Podcast market: large move near certainty but noisy and low-volume — ranks below SHEIN
+	t.Run("NoisyMarket_RanksBelow_CleanLargeMove", func(t *testing.T) {
+		klPodcast := KLDivergence(0.898, 0.810)
+		vwPodcast := LogVolumeWeight(30_000, vRef)
+		snrPodcast := HistoricalSNR(noisyHistory, 0.898-0.810)
+		scorePodcast := CompositeScore(klPodcast, vwPodcast, snrPodcast, 1.0)
+
+		klSHEIN := KLDivergence(0.45, 0.38)
+		vwSHEIN := LogVolumeWeight(500_000, vRef)
+		snrSHEIN := HistoricalSNR(stableHistory, 0.45-0.38)
+		scoreSHEIN := CompositeScore(klSHEIN, vwSHEIN, snrSHEIN, 1.0)
+
+		if scorePodcast >= scoreSHEIN {
+			t.Errorf("Podcast (score=%.6f) should rank below clean SHEIN (score=%.6f)", scorePodcast, scoreSHEIN)
+		}
+	})
+}
+
+// TestScenario_PollInterval15m validates the quality bar at 15m polling
+// (config.yaml.example: sensitivity=0.5, detection_intervals=4 → 60m window,
+// minScore = 0.5² × 0.05 = 0.0125).
+//
+// Signals tested:
+//   - Grok AI: 9.4% drop from high certainty (91.9%→82.5%), $200K volume → passes
+//   - Norway Olympics: 0.6% noise at near-certainty (94%→94.6%), $50K volume → filtered
+//   - Iran geopolitics: 4% move in quiet $1M market → passes (large liquid market)
+//   - Iran specific date: 0.5%→1.5% tail move, $20K volume → filtered
+func TestScenario_PollInterval15m(t *testing.T) {
+	const sensitivity = 0.5
+	minScore := sensitivity * sensitivity * 0.05 // 0.0125
+	const vRef = 25000.0
+
+	stableHistory := makeSnaps([]float64{0.920, 0.919, 0.921, 0.918, 0.920, 0.919, 0.921, 0.920})
+
+	// Grok AI market: 9.4% drop from high certainty, significant volume
+	t.Run("ValuableSignal_HighCertaintyDrop_MedVolume", func(t *testing.T) {
+		kl := KLDivergence(0.919, 0.825)
+		vw := LogVolumeWeight(200_000, vRef)
+		snr := HistoricalSNR(stableHistory, 0.919-0.825)
+		score := CompositeScore(kl, vw, snr, 1.0)
+		if score < minScore {
+			t.Errorf("Grok 9.4%% drop: score=%.6f should exceed minScore=%.4f (kl=%.5f, vw=%.3f, snr=%.3f)",
+				score, minScore, kl, vw, snr)
+		}
+	})
+
+	// Norway Olympics: 0.6% near-certainty noise, moderate volume
+	t.Run("NoiseFiltered_TinyMove_NearCertain", func(t *testing.T) {
+		kl := KLDivergence(0.940, 0.946)
+		vw := LogVolumeWeight(50_000, vRef)
+		score := CompositeScore(kl, vw, 1.0, 1.0)
+		if score >= minScore {
+			t.Errorf("Norway 0.6%% move: score=%.6f should be below minScore=%.4f (kl=%.5f, vw=%.3f)",
+				score, minScore, kl, vw)
+		}
+	})
+
+	// Iran geopolitics: 4% move in large liquid market (US/Israel attack question)
+	t.Run("ValuableSignal_ModerateMove_HighVolume", func(t *testing.T) {
+		quietHistory := makeSnaps([]float64{0.201, 0.200, 0.201, 0.200, 0.201, 0.200, 0.201, 0.200})
+		kl := KLDivergence(0.20, 0.24)
+		vw := LogVolumeWeight(1_000_000, vRef)
+		snr := HistoricalSNR(quietHistory, 0.20-0.24)
+		score := CompositeScore(kl, vw, snr, 1.0)
+		if score < minScore {
+			t.Errorf("Iran 4%% move: score=%.6f should exceed minScore=%.4f (kl=%.5f, vw=%.3f, snr=%.3f)",
+				score, minScore, kl, vw, snr)
+		}
+	})
+
+	// Iran specific-date contract: 0.5%→1.5% tail move, low volume
+	t.Run("NoiseFiltered_TailMove_LowVolume", func(t *testing.T) {
+		kl := KLDivergence(0.005, 0.015)
+		vw := LogVolumeWeight(20_000, vRef)
+		score := CompositeScore(kl, vw, 1.0, 1.0)
+		if score >= minScore {
+			t.Errorf("Iran tail 0.5→1.5%%%% move: score=%.6f should be below minScore=%.4f (kl=%.5f, vw=%.3f)",
+				score, minScore, kl, vw)
+		}
+	})
+}
+
+// ─── Scenario tests: TC discrimination with multi-interval detection window ──
+//
+// These tests exercise ScoreAndRank with real storage snapshots to verify that
+// TrajectoryConsistency actually discriminates once the detection window spans
+// multiple poll intervals (detection_intervals ≥ 2 in config).
+//
+// "Important" = high-volume market (best-effort proxy for event significance).
+// Multi-market events are represented by separate composite-ID entries.
+
+// TestScenario_NoisySignalImportantEventFiltered verifies that a high-volume
+// multi-market event is filtered when its window snapshots oscillate (low TC)
+// and its history is volatile (low SNR). A clean signal from the same event
+// serves as a positive control.
+//
+// Configuration: config.yaml.example (15m polling, sensitivity=0.5,
+// detection_intervals=4 → 60m window, minScore=0.0125).
+func TestScenario_NoisySignalImportantEventFiltered(t *testing.T) {
+	// 15m polling × 4 intervals = 60m detection window (config.yaml.example)
+	const detectionIntervals = 4
+	const pollInterval = 15 * time.Minute
+	detectionWindow := time.Duration(detectionIntervals) * pollInterval // 60m
+
+	const sensitivity = 0.5
+	minScore := sensitivity * sensitivity * 0.05 // 0.0125
+	const vRef = 25000.0
+
+	store := storage.New(200, 200, "/tmp/test-noisy-important.json", 0644, 0755)
+	mon := New(store)
+
+	// Multi-market event "BTC price targets": high-volume, two separate markets.
+	// Market btc:100k ($2M volume) — oscillating window snapshots, volatile history.
+	//   Window: [0.50, 0.62, 0.47, 0.61, 0.57]  →  Δs: +0.12, −0.15, +0.14, −0.04
+	//   TC = |ΣΔ| / Σ|Δ| = 0.07/0.45 ≈ 0.156
+	//   History: ±0.20 swings → σ≈0.28 → SNR clamped to 0.5 (minimum)
+	//   Score = KL(0.50,0.57) × vw($2M) × 0.5 × 0.156 ≈ 0.005 < 0.0125 → FILTERED
+	noisyEventID := "btc:100k"
+	noisyEvt := &models.Event{
+		ID: noisyEventID, EventID: "btc", MarketID: "100k",
+		Title: "BTC price targets", Category: "crypto", Volume24hr: 2_000_000,
+		YesProbability: 0.57, NoProbability: 0.43,
+	}
+
+	// Market btc:150k ($1.5M volume) — same oscillating pattern, also filtered.
+	noisyEventID2 := "btc:150k"
+	noisyEvt2 := &models.Event{
+		ID: noisyEventID2, EventID: "btc", MarketID: "150k",
+		Title: "BTC price targets", Category: "crypto", Volume24hr: 1_500_000,
+		YesProbability: 0.18, NoProbability: 0.82,
+	}
+
+	// Positive control: eth:flip ($500K), monotonic window → TC=1.0, stable history → SNR=5.0
+	// Score = KL(0.40,0.60) × vw($500K) × 5.0 × 1.0 ≈ 1.78 >> 0.0125 → PASSES
+	cleanEventID := "eth:flip"
+	cleanEvt := &models.Event{
+		ID: cleanEventID, EventID: "eth", MarketID: "flip",
+		Title: "ETH rally", Category: "crypto", Volume24hr: 500_000,
+		YesProbability: 0.60, NoProbability: 0.40,
+	}
+
+	// Register events in storage so AddSnapshot succeeds.
+	if err := store.AddEvent(noisyEvt); err != nil {
+		t.Fatalf("AddEvent btc:100k failed: %v", err)
+	}
+	if err := store.AddEvent(noisyEvt2); err != nil {
+		t.Fatalf("AddEvent btc:150k failed: %v", err)
+	}
+	if err := store.AddEvent(cleanEvt); err != nil {
+		t.Fatalf("AddEvent eth:flip failed: %v", err)
+	}
+
+	now := time.Now()
+
+	addSnap := func(t *testing.T, eventID string, p float64, age time.Duration) {
+		t.Helper()
+		if err := store.AddSnapshot(&models.Snapshot{
+			ID: uuid.New().String(), EventID: eventID,
+			YesProbability: p, NoProbability: 1 - p, Source: "test",
+			Timestamp: now.Add(-age),
+		}); err != nil {
+			t.Fatalf("AddSnapshot(%s, p=%.3f, age=%v) failed: %v", eventID, p, age, err)
+		}
+	}
+
+	// Historical snapshots OUTSIDE 60m window: ±0.20 swings → high σ → low SNR.
+	noisyHistProbs := []float64{0.50, 0.70, 0.30, 0.70, 0.30, 0.50}
+	for i, p := range noisyHistProbs {
+		// Place at (window + (len-i)*15min) to be clearly outside window
+		histAge := detectionWindow + time.Duration(len(noisyHistProbs)-i)*pollInterval
+		addSnap(t, noisyEventID, p, histAge)
+		addSnap(t, noisyEventID2, p*0.32, histAge)
+	}
+
+	cleanHistProbs := []float64{0.400, 0.401, 0.399, 0.400, 0.401, 0.400}
+	for i, p := range cleanHistProbs {
+		histAge := detectionWindow + time.Duration(len(cleanHistProbs)-i)*pollInterval
+		addSnap(t, cleanEventID, p, histAge)
+	}
+
+	// Window snapshots INSIDE 60m window.
+	// Noisy markets: oscillate [0.50, 0.62, 0.47, 0.61, 0.57] across the window.
+	// Oldest is at window-5min (55m ago) to avoid boundary exclusion.
+	noisyWindowProbs := []float64{0.50, 0.62, 0.47, 0.61, 0.57}
+	winStep := (detectionWindow - 5*time.Minute) / time.Duration(len(noisyWindowProbs)-1)
+	for i, p := range noisyWindowProbs {
+		winAge := detectionWindow - 5*time.Minute - time.Duration(i)*winStep
+		addSnap(t, noisyEventID, p, winAge)
+		addSnap(t, noisyEventID2, p*0.32, winAge)
+	}
+
+	// Clean market: monotonic [0.40, 0.45, 0.50, 0.55, 0.60] across the window.
+	cleanWindowProbs := []float64{0.40, 0.45, 0.50, 0.55, 0.60}
+	for i, p := range cleanWindowProbs {
+		winAge := detectionWindow - 5*time.Minute - time.Duration(i)*winStep
+		addSnap(t, cleanEventID, p, winAge)
+	}
+
+	changes := []models.Change{
+		{ID: uuid.New().String(), EventID: noisyEventID, OldProbability: 0.50, NewProbability: 0.57, Magnitude: 0.07, Direction: "increase", TimeWindow: detectionWindow, DetectedAt: now},
+		{ID: uuid.New().String(), EventID: noisyEventID2, OldProbability: 0.16, NewProbability: 0.182, Magnitude: 0.022, Direction: "increase", TimeWindow: detectionWindow, DetectedAt: now},
+		{ID: uuid.New().String(), EventID: cleanEventID, OldProbability: 0.40, NewProbability: 0.60, Magnitude: 0.20, Direction: "increase", TimeWindow: detectionWindow, DetectedAt: now},
+	}
+	eventsMap := map[string]*models.Event{
+		noisyEventID:  noisyEvt,
+		noisyEventID2: noisyEvt2,
+		cleanEventID:  cleanEvt,
+	}
+
+	results := mon.ScoreAndRank(changes, eventsMap, minScore, 5, vRef)
+
+	cleanPassed := false
+	for _, r := range results {
+		if r.EventID == cleanEventID {
+			cleanPassed = true
+		}
+		if r.EventID == noisyEventID {
+			t.Errorf("NoisyImportant: btc:100k oscillating signal should be filtered (score=%.6f, minScore=%.4f)", r.SignalScore, minScore)
+		}
+		if r.EventID == noisyEventID2 {
+			t.Errorf("NoisyImportant: btc:150k oscillating signal should be filtered (score=%.6f, minScore=%.4f)", r.SignalScore, minScore)
+		}
+	}
+	if !cleanPassed {
+		t.Errorf("NoisyImportant: clean eth:flip signal should pass quality bar but was filtered")
+	}
+}
+
+// TestScenario_SignificantSignalUnimportantEventFiltered verifies that a
+// meaningful probability move on a minimum-volume market is filtered by the
+// combined volume + SNR penalty, while the identical move on a high-volume
+// liquid market (with rich history) passes.
+//
+// "Unimportant" = just above the liquidity floor ($25K min), sparse history.
+// "Important" = high-volume ($1M), well-established with stable history.
+//
+// Configuration: config.yaml.example (15m polling, sensitivity=0.5,
+// detection_intervals=4 → 60m window, minScore=0.0125).
+//
+// Score math (7% move, 50%→57%):
+//
+//	KL(0.50, 0.57) ≈ 0.00984
+//	Unimportant: vw($30K)=log2(2.2)≈1.14, SNR=1.0 → score≈0.0112 < 0.0125 → FILTERED
+//	Important:   vw($1M) =log2(41) ≈5.36, SNR=5.0 → score≈0.264  > 0.0125 → PASSES
+func TestScenario_SignificantSignalUnimportantEventFiltered(t *testing.T) {
+	// 15m polling × 4 intervals = 60m detection window (config.yaml.example)
+	const detectionIntervals = 4
+	const pollInterval = 15 * time.Minute
+	detectionWindow := time.Duration(detectionIntervals) * pollInterval // 60m
+
+	const sensitivity = 0.5
+	minScore := sensitivity * sensitivity * 0.05 // 0.0125
+	const vRef = 25000.0
+
+	store := storage.New(200, 200, "/tmp/test-unimportant-event.json", 0644, 0755)
+	mon := New(store)
+
+	// "min-vol" — market just above liquidity floor ($30K), no historical data.
+	// Volume barely passes pre-filter; SNR falls back to 1.0 (no history).
+	// vw = log2(1 + 30000/25000) = log2(2.2) ≈ 1.14
+	// Score = KL(0.50,0.57) × 1.14 × 1.0 × 1.0 ≈ 0.0112 < minScore=0.0125 → FILTERED
+	lowVolID := "min-vol"
+	lowVolEvt := &models.Event{
+		ID: lowVolID, EventID: "min-vol", Title: "Low-volume market", Category: "other",
+		Volume24hr: 30_000, YesProbability: 0.57, NoProbability: 0.43,
+	}
+
+	// "liq-vol" — highly liquid market ($1M volume), stable history → SNR=5.0.
+	// vw = log2(1 + 1000000/25000) = log2(41) ≈ 5.36
+	// Score = KL(0.50,0.57) × 5.36 × 5.0 × 1.0 ≈ 0.264 >> minScore=0.0125 → PASSES
+	highVolID := "liq-vol"
+	highVolEvt := &models.Event{
+		ID: highVolID, EventID: "liq-vol", Title: "High-volume liquid market", Category: "politics",
+		Volume24hr: 1_000_000, YesProbability: 0.57, NoProbability: 0.43,
+	}
+
+	if err := store.AddEvent(lowVolEvt); err != nil {
+		t.Fatalf("AddEvent min-vol failed: %v", err)
+	}
+	if err := store.AddEvent(highVolEvt); err != nil {
+		t.Fatalf("AddEvent liq-vol failed: %v", err)
+	}
+
+	now := time.Now()
+
+	addSnap := func(t *testing.T, eventID string, p float64, age time.Duration) {
+		t.Helper()
+		if err := store.AddSnapshot(&models.Snapshot{
+			ID: uuid.New().String(), EventID: eventID,
+			YesProbability: p, NoProbability: 1 - p, Source: "test",
+			Timestamp: now.Add(-age),
+		}); err != nil {
+			t.Fatalf("AddSnapshot(%s) failed: %v", eventID, err)
+		}
+	}
+
+	// Stable historical snapshots for liq-vol ONLY (outside 60m window).
+	// Tiny σ ≈ 0.001 → SNR = min(5, 0.07/0.001) = 5.0 for 7% move.
+	// min-vol gets no history → SNR = 1.0 (fallback for sparse market).
+	stableHistProbs := []float64{0.500, 0.501, 0.499, 0.500, 0.501, 0.499}
+	for i, p := range stableHistProbs {
+		histAge := detectionWindow + time.Duration(len(stableHistProbs)-i)*pollInterval
+		addSnap(t, highVolID, p, histAge)
+	}
+
+	// Window snapshots for liq-vol: monotonic [0.50, 0.52, 0.54, 0.56, 0.57] → TC=1.0
+	liqWindowProbs := []float64{0.50, 0.52, 0.54, 0.56, 0.57}
+	winStep := (detectionWindow - 5*time.Minute) / time.Duration(len(liqWindowProbs)-1)
+	for i, p := range liqWindowProbs {
+		winAge := detectionWindow - 5*time.Minute - time.Duration(i)*winStep
+		addSnap(t, highVolID, p, winAge)
+	}
+	// No window snapshots for min-vol (sparse market, TC=1.0 fallback).
+
+	changes := []models.Change{
+		{ID: uuid.New().String(), EventID: lowVolID, OldProbability: 0.50, NewProbability: 0.57, Magnitude: 0.07, Direction: "increase", TimeWindow: detectionWindow, DetectedAt: now},
+		{ID: uuid.New().String(), EventID: highVolID, OldProbability: 0.50, NewProbability: 0.57, Magnitude: 0.07, Direction: "increase", TimeWindow: detectionWindow, DetectedAt: now},
+	}
+	eventsMap := map[string]*models.Event{
+		lowVolID:  lowVolEvt,
+		highVolID: highVolEvt,
+	}
+
+	results := mon.ScoreAndRank(changes, eventsMap, minScore, 5, vRef)
+
+	highVolPassed := false
+	for _, r := range results {
+		if r.EventID == lowVolID {
+			t.Errorf("UnimportantFiltered: min-vol ($30K, no history) should be filtered (score=%.6f, minScore=%.4f)", r.SignalScore, minScore)
+		}
+		if r.EventID == highVolID {
+			highVolPassed = true
+		}
+	}
+	if !highVolPassed {
+		t.Errorf("UnimportantFiltered: liq-vol ($1M, stable history) same 7%% move should pass quality bar")
+	}
+}
+
+// TestTrajectoryConsistency_SinglePairWindow documents that TC always returns
+// 1.0 when the detection window contains exactly two snapshots (one polling
+// interval). This is expected behaviour: TC provides no discrimination at the
+// default poll_interval window, but kicks in when windows span multiple polls.
+func TestTrajectoryConsistency_SinglePairWindow(t *testing.T) {
+	// Two snapshots = one consecutive pair → TC definition returns 1.0
+	twoSnaps := makeSnaps([]float64{0.50, 0.57})
+	tc := TrajectoryConsistency(twoSnaps)
+	if tc != 1.0 {
+		t.Errorf("SinglePairWindow: expected TC=1.0 for 2-snapshot window, got %.6f", tc)
+	}
+
+	// Confirm with a clean monotonic 4-snapshot window TC > single-pair TC
+	// (only relevant when window spans multiple poll intervals)
+	fourSnapsMono := makeSnaps([]float64{0.50, 0.53, 0.56, 0.59})
+	tcMono := TrajectoryConsistency(fourSnapsMono)
+	if tcMono != 1.0 {
+		t.Errorf("MonotonicMultiPair: expected TC=1.0 for perfectly monotonic window, got %.6f", tcMono)
+	}
+
+	// Oscillating multi-pair window gives TC < 1.0
+	fourSnapsOscil := makeSnaps([]float64{0.50, 0.60, 0.50, 0.60})
+	tcOscil := TrajectoryConsistency(fourSnapsOscil)
+	if tcOscil >= 1.0 {
+		t.Errorf("OscillatingMultiPair: expected TC < 1.0 for oscillating window, got %.6f", tcOscil)
 	}
 }

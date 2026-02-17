@@ -227,13 +227,18 @@ func CompositeScore(kl, vw, snr, tc float64) float64 {
 // filters out changes below minScore, and returns at most k changes sorted by
 // score descending. Ties are broken by EventID lexicographic descending for
 // determinism. Returns an empty (non-nil) slice when nothing clears the quality bar.
+// vRef is the reference volume for log-volume weighting (typically volume_24hr_min
+// from config); events at this volume receive weight ≈ 1.0.
 func (m *Monitor) ScoreAndRank(
 	changes []models.Change,
 	events map[string]*models.Event,
 	minScore float64,
 	k int,
+	vRef float64,
 ) []models.Change {
-	const vRef = 25000.0 // default volume_24hr_min; used as log-volume reference
+	if vRef <= 0 {
+		vRef = 25000.0
+	}
 
 	var candidates []models.Change
 

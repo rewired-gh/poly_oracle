@@ -44,9 +44,10 @@ type PolymarketConfig struct {
 
 // MonitorConfig holds monitoring behavior configuration
 type MonitorConfig struct {
-	Sensitivity float64 `mapstructure:"sensitivity"`
-	TopK        int     `mapstructure:"top_k"`
-	Enabled     bool    `mapstructure:"enabled"`
+	Sensitivity        float64 `mapstructure:"sensitivity"`
+	TopK               int     `mapstructure:"top_k"`
+	Enabled            bool    `mapstructure:"enabled"`
+	DetectionIntervals int     `mapstructure:"detection_intervals"`
 }
 
 // MinCompositeScore returns the minimum composite score floor derived from sensitivity.
@@ -119,6 +120,7 @@ func Load(path string) (*Config, error) {
 	_ = v.BindEnv("monitor.sensitivity", "POLY_ORACLE_MONITOR_SENSITIVITY")
 	_ = v.BindEnv("monitor.top_k", "POLY_ORACLE_MONITOR_TOP_K")
 	_ = v.BindEnv("monitor.enabled", "POLY_ORACLE_MONITOR_ENABLED")
+	_ = v.BindEnv("monitor.detection_intervals", "POLY_ORACLE_MONITOR_DETECTION_INTERVALS")
 
 	// Telegram
 	_ = v.BindEnv("telegram.bot_token", "POLY_ORACLE_TELEGRAM_BOT_TOKEN")
@@ -181,6 +183,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("monitor.sensitivity", 0.5) // medium quality bar
 	v.SetDefault("monitor.top_k", 5)         // Top 5 events (digestible)
 	v.SetDefault("monitor.enabled", true)
+	v.SetDefault("monitor.detection_intervals", 4) // 4 poll intervals for TC window
 
 	// Telegram defaults
 	v.SetDefault("telegram.enabled", false)
@@ -237,6 +240,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Monitor.TopK < 0 {
 		return fmt.Errorf("monitor.top_k must not be negative")
+	}
+	if c.Monitor.DetectionIntervals < 2 {
+		return fmt.Errorf("monitor.detection_intervals must be at least 2 (need ≥2 poll intervals for TC computation)")
 	}
 
 	// Validate Telegram config

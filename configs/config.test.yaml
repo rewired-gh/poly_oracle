@@ -3,7 +3,7 @@
 # Single interval (poll_interval) drives: polling, detection window, persistence.
 
 polymarket:
-  poll_interval: 15m
+  poll_interval: 5m
   limit: 5000
   categories:
     - geopolitics
@@ -16,11 +16,23 @@ polymarket:
   volume_1mo_min: 250000      # $250K minimum monthly volume
 
 monitor:
-  # Lower sensitivity (0.3) for 15m window - changes are smaller
-  # min_score = 0.3^2 × 0.05 = 0.0045
-  # At this threshold, ~3-5% probability moves can pass the quality bar
+  # sensitivity controls the composite signal quality threshold (0.0=permissive, 1.0=strict)
+  # Formula: min_score = sensitivity² × 0.05  (window-agnostic — SNR handles scale)
+  #
+  # Calibration guide (5m polling, typical $25K–$1M volume events):
+  #   0.3 → minScore=0.0045  — very permissive; expect 5+ alerts per cycle
+  #   0.4 → minScore=0.008   — catches 5%+ moves on mid-volume markets; ~2-4 alerts/cycle (recommended)
+  #   0.5 → minScore=0.0125  — stricter; only strong moves on high-volume markets pass
+  #
+  # Example: a 7% drop on a $500K market with stable history scores ≈ 0.22 (passes at 0.4)
+  # Example: a 0.4%→0.8% tail move on a $10K market scores ≈ 0.0008 (filtered at 0.4)
   sensitivity: 0.4
   top_k: 5
+
+  # detection_intervals: number of poll_interval periods in the detection window.
+  # Effective window = (detection_intervals + 1) × poll_interval.
+  # At 5m polling: 4 → effective 25m window (5 snapshots → 4 pairs for TC discrimination)
+  detection_intervals: 4
 
 telegram:
   bot_token: "YOUR_BOT_TOKEN"
