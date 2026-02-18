@@ -29,7 +29,7 @@ monitor:
   # Example: a 9% drop at 91%→82% certainty on a $200K market scores ≈ 0.73 (passes at 0.5)
   # Example: a 0.6% move at near-certainty on a $50K market scores ≈ 0.0005 (filtered at 0.5)
   sensitivity: 0.5
-  top_k: 5
+  top_k: 10
 
   # detection_intervals: how many poll_interval periods form the detection window.
   # Effective window = (detection_intervals + 1) × poll_interval.

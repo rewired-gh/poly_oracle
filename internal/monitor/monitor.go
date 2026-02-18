@@ -10,7 +10,8 @@
 // Historical SNR measures how unusual this move is relative to the market's noise floor.
 // Trajectory consistency rewards clean directional moves over oscillating noise.
 //
-// Use ScoreAndRank to apply quality filtering and return the top-K highest-signal changes.
+// Use ScoreAndRank to apply quality filtering, group by event, and return the
+// top-K highest-signal event groups.
 package monitor
 
 import (
@@ -25,15 +26,24 @@ import (
 	"github.com/poly-oracle/internal/storage"
 )
 
+// notifiedRecord tracks a previously sent notification for cooldown deduplication.
+type notifiedRecord struct {
+	Direction string
+	NewProb   float64
+	SentAt    time.Time
+}
+
 // Monitor handles event monitoring and change detection
 type Monitor struct {
-	storage *storage.Storage
+	storage         *storage.Storage
+	notifiedMarkets map[string]notifiedRecord // key = composite event ID
 }
 
 // New creates a new Monitor instance
 func New(s *storage.Storage) *Monitor {
 	return &Monitor{
-		storage: s,
+		storage:         s,
+		notifiedMarkets: make(map[string]notifiedRecord),
 	}
 }
 
@@ -106,19 +116,20 @@ func (m *Monitor) DetectChanges(events []models.Event, window time.Duration) ([]
 			}
 
 			changes = append(changes, models.Change{
-				ID:             uuid.New().String(),
-				EventID:        event.ID,
-				EventQuestion:  event.Title,
-				EventURL:       event.EventURL,
-				MarketID:       event.MarketID,
-				MarketQuestion: event.MarketQuestion,
-				Magnitude:      change,
-				Direction:      direction,
-				OldProbability: oldest.YesProbability,
-				NewProbability: current.YesProbability,
-				TimeWindow:     window,
-				DetectedAt:     now,
-				Notified:       false,
+				ID:              uuid.New().String(),
+				EventID:         event.ID,
+				OriginalEventID: event.EventID,
+				EventQuestion:   event.Title,
+				EventURL:        event.EventURL,
+				MarketID:        event.MarketID,
+				MarketQuestion:  event.MarketQuestion,
+				Magnitude:       change,
+				Direction:       direction,
+				OldProbability:  oldest.YesProbability,
+				NewProbability:  current.YesProbability,
+				TimeWindow:      window,
+				DetectedAt:      now,
+				Notified:        false,
 			})
 		} else if change > 0 {
 			eventsWithChangeBelowFloor++
@@ -223,10 +234,49 @@ func CompositeScore(kl, vw, snr, tc float64) float64 {
 	return kl * vw * snr * tc
 }
 
+// groupByEvent groups a slice of scored changes by their OriginalEventID (falling
+// back to EventID when OriginalEventID is empty). Markets within each group are
+// sorted by SignalScore descending. Insertion order of groups is preserved.
+func groupByEvent(changes []models.Change) []models.EventGroup {
+	groupMap := make(map[string]*models.EventGroup)
+	order := []string{}
+
+	for _, change := range changes {
+		id := change.OriginalEventID
+		if id == "" {
+			id = change.EventID
+		}
+		if _, exists := groupMap[id]; !exists {
+			groupMap[id] = &models.EventGroup{
+				EventID:       id,
+				EventQuestion: change.EventQuestion,
+				EventURL:      change.EventURL,
+			}
+			order = append(order, id)
+		}
+		g := groupMap[id]
+		g.Markets = append(g.Markets, change)
+		if change.SignalScore > g.BestScore {
+			g.BestScore = change.SignalScore
+		}
+	}
+
+	result := make([]models.EventGroup, 0, len(order))
+	for _, id := range order {
+		g := *groupMap[id]
+		sort.Slice(g.Markets, func(a, b int) bool {
+			return g.Markets[a].SignalScore > g.Markets[b].SignalScore
+		})
+		result = append(result, g)
+	}
+	return result
+}
+
 // ScoreAndRank scores each change using the four-factor composite signal score,
-// filters out changes below minScore, and returns at most k changes sorted by
-// score descending. Ties are broken by EventID lexicographic descending for
-// determinism. Returns an empty (non-nil) slice when nothing clears the quality bar.
+// filters out changes below minScore, groups them by original event ID, and
+// returns at most k event groups sorted by BestScore descending. Ties are broken
+// by EventID lexicographic descending for determinism. Returns an empty (non-nil)
+// slice when nothing clears the quality bar.
 // vRef is the reference volume for log-volume weighting (typically volume_24hr_min
 // from config); events at this volume receive weight ≈ 1.0.
 func (m *Monitor) ScoreAndRank(
@@ -235,7 +285,7 @@ func (m *Monitor) ScoreAndRank(
 	minScore float64,
 	k int,
 	vRef float64,
-) []models.Change {
+) []models.EventGroup {
 	if vRef <= 0 {
 		vRef = 25000.0
 	}
@@ -271,19 +321,86 @@ func (m *Monitor) ScoreAndRank(
 		}
 	}
 
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].SignalScore != candidates[j].SignalScore {
-			return candidates[i].SignalScore > candidates[j].SignalScore
+	groups := groupByEvent(candidates)
+
+	sort.Slice(groups, func(i, j int) bool {
+		if groups[i].BestScore != groups[j].BestScore {
+			return groups[i].BestScore > groups[j].BestScore
 		}
 		// Tie-break: EventID lexicographic descending
-		return candidates[i].EventID > candidates[j].EventID
+		return groups[i].EventID > groups[j].EventID
 	})
 
-	if k <= 0 || len(candidates) == 0 {
-		return []models.Change{}
+	if k <= 0 || len(groups) == 0 {
+		return []models.EventGroup{}
 	}
-	if k > len(candidates) {
-		k = len(candidates)
+	if k > len(groups) {
+		k = len(groups)
 	}
-	return candidates[:k]
+	return groups[:k]
+}
+
+// isDeterministicZone returns true when a probability is in the high-conviction
+// region (>90% or <10%), where further moves carry outsized informational weight.
+func isDeterministicZone(p float64) bool {
+	return p > 0.90 || p < 0.10
+}
+
+// FilterRecentlySent removes markets from groups that were recently notified with
+// the same direction and are not entering the deterministic zone for the first time.
+// Groups that become empty after filtering are dropped. Returns a non-nil slice.
+func (m *Monitor) FilterRecentlySent(groups []models.EventGroup, cooldown time.Duration) []models.EventGroup {
+	now := time.Now()
+	var result []models.EventGroup
+
+	for _, group := range groups {
+		var filtered []models.Change
+		for _, change := range group.Markets {
+			compositeID := change.EventID
+			rec, exists := m.notifiedMarkets[compositeID]
+			if exists && now.Sub(rec.SentAt) < cooldown {
+				// Recently sent — suppress unless direction changed or entering det zone
+				sameDirection := rec.Direction == change.Direction
+				enteringDetZone := isDeterministicZone(change.NewProbability) && !isDeterministicZone(rec.NewProb)
+				if sameDirection && !enteringDetZone {
+					continue
+				}
+			}
+			filtered = append(filtered, change)
+		}
+
+		if len(filtered) == 0 {
+			continue
+		}
+
+		newGroup := group
+		newGroup.Markets = filtered
+		newGroup.BestScore = 0
+		for _, c := range filtered {
+			if c.SignalScore > newGroup.BestScore {
+				newGroup.BestScore = c.SignalScore
+			}
+		}
+		result = append(result, newGroup)
+	}
+
+	if result == nil {
+		return []models.EventGroup{}
+	}
+	return result
+}
+
+// RecordNotified records all markets in the given groups as notified at the current time.
+// Call this after a successful Telegram send to enable cooldown deduplication.
+func (m *Monitor) RecordNotified(groups []models.EventGroup) {
+	now := time.Now()
+	for _, group := range groups {
+		for _, change := range group.Markets {
+			m.notifiedMarkets[change.EventID] = notifiedRecord{
+				Direction: change.Direction,
+				NewProb:   change.NewProbability,
+				SentAt:    now,
+			}
+		}
+	}
 }

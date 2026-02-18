@@ -580,10 +580,10 @@ func TestScoring(t *testing.T) {
 			t.Fatalf("Determinism: different lengths %d vs %d", len(result1), len(result2))
 		}
 		for i := range result1 {
-			if result1[i].EventID != result2[i].EventID || result1[i].SignalScore != result2[i].SignalScore {
+			if result1[i].EventID != result2[i].EventID || result1[i].BestScore != result2[i].BestScore {
 				t.Errorf("Determinism: position %d differs: %s/%.6f vs %s/%.6f",
-					i, result1[i].EventID, result1[i].SignalScore,
-					result2[i].EventID, result2[i].SignalScore)
+					i, result1[i].EventID, result1[i].BestScore,
+					result2[i].EventID, result2[i].BestScore)
 			}
 		}
 	})
@@ -921,10 +921,10 @@ func TestScenario_NoisySignalImportantEventFiltered(t *testing.T) {
 			cleanPassed = true
 		}
 		if r.EventID == noisyEventID {
-			t.Errorf("NoisyImportant: btc:100k oscillating signal should be filtered (score=%.6f, minScore=%.4f)", r.SignalScore, minScore)
+			t.Errorf("NoisyImportant: btc:100k oscillating signal should be filtered (score=%.6f, minScore=%.4f)", r.BestScore, minScore)
 		}
 		if r.EventID == noisyEventID2 {
-			t.Errorf("NoisyImportant: btc:150k oscillating signal should be filtered (score=%.6f, minScore=%.4f)", r.SignalScore, minScore)
+			t.Errorf("NoisyImportant: btc:150k oscillating signal should be filtered (score=%.6f, minScore=%.4f)", r.BestScore, minScore)
 		}
 	}
 	if !cleanPassed {
@@ -1032,7 +1032,7 @@ func TestScenario_SignificantSignalUnimportantEventFiltered(t *testing.T) {
 	highVolPassed := false
 	for _, r := range results {
 		if r.EventID == lowVolID {
-			t.Errorf("UnimportantFiltered: min-vol ($30K, no history) should be filtered (score=%.6f, minScore=%.4f)", r.SignalScore, minScore)
+			t.Errorf("UnimportantFiltered: min-vol ($30K, no history) should be filtered (score=%.6f, minScore=%.4f)", r.BestScore, minScore)
 		}
 		if r.EventID == highVolID {
 			highVolPassed = true
@@ -1068,5 +1068,197 @@ func TestTrajectoryConsistency_SinglePairWindow(t *testing.T) {
 	tcOscil := TrajectoryConsistency(fourSnapsOscil)
 	if tcOscil >= 1.0 {
 		t.Errorf("OscillatingMultiPair: expected TC < 1.0 for oscillating window, got %.6f", tcOscil)
+	}
+}
+
+// ─── EventGroup / grouping tests ─────────────────────────────────────────────
+
+// TestScoreAndRank_GroupsByOriginalEventID verifies that two markets from the
+// same original event (different composite IDs) are collapsed into one group.
+func TestScoreAndRank_GroupsByOriginalEventID(t *testing.T) {
+	store := storage.New(100, 50, "/tmp/test-grouping.json", 0644, 0755)
+	mon := New(store)
+
+	events := map[string]*models.Event{
+		"btc:100k": {ID: "btc:100k", Volume24hr: 500_000},
+		"btc:150k": {ID: "btc:150k", Volume24hr: 400_000},
+		"eth:flip": {ID: "eth:flip", Volume24hr: 200_000},
+	}
+	changes := []models.Change{
+		{ID: "c1", EventID: "btc:100k", OriginalEventID: "btc", OldProbability: 0.50, NewProbability: 0.65, Magnitude: 0.15, Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now()},
+		{ID: "c2", EventID: "btc:150k", OriginalEventID: "btc", OldProbability: 0.30, NewProbability: 0.45, Magnitude: 0.15, Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now()},
+		{ID: "c3", EventID: "eth:flip", OriginalEventID: "eth", OldProbability: 0.40, NewProbability: 0.60, Magnitude: 0.20, Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now()},
+	}
+
+	groups := mon.ScoreAndRank(changes, events, 0.0, 10, 25000.0)
+
+	if len(groups) != 2 {
+		t.Errorf("Expected 2 groups (btc, eth), got %d", len(groups))
+	}
+
+	// Find btc group
+	var btcGroup *models.EventGroup
+	for i := range groups {
+		if groups[i].EventID == "btc" {
+			btcGroup = &groups[i]
+		}
+	}
+	if btcGroup == nil {
+		t.Fatal("Expected a group with EventID='btc', not found")
+	}
+	if len(btcGroup.Markets) != 2 {
+		t.Errorf("Expected 2 markets in btc group, got %d", len(btcGroup.Markets))
+	}
+}
+
+// TestScoreAndRank_TopKAtGroupLevel verifies that top-k is applied at the event
+// group level, not at the individual market level.
+func TestScoreAndRank_TopKAtGroupLevel(t *testing.T) {
+	store := storage.New(100, 50, "/tmp/test-group-topk.json", 0644, 0755)
+	mon := New(store)
+
+	// 4 markets: 2 from "grok" event + 2 singletons. k=2 should give 2 groups.
+	events := map[string]*models.Event{
+		"grok:feb": {ID: "grok:feb", Volume24hr: 300_000},
+		"grok:mar": {ID: "grok:mar", Volume24hr: 250_000},
+		"iran":     {ID: "iran", Volume24hr: 400_000},
+		"btc":      {ID: "btc", Volume24hr: 100_000},
+	}
+	changes := []models.Change{
+		{ID: "c1", EventID: "grok:feb", OriginalEventID: "grok", OldProbability: 0.50, NewProbability: 0.65, Magnitude: 0.15, Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now()},
+		{ID: "c2", EventID: "grok:mar", OriginalEventID: "grok", OldProbability: 0.40, NewProbability: 0.55, Magnitude: 0.15, Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now()},
+		{ID: "c3", EventID: "iran", OriginalEventID: "iran", OldProbability: 0.20, NewProbability: 0.40, Magnitude: 0.20, Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now()},
+		{ID: "c4", EventID: "btc", OriginalEventID: "btc", OldProbability: 0.50, NewProbability: 0.55, Magnitude: 0.05, Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now()},
+	}
+
+	groups := mon.ScoreAndRank(changes, events, 0.0, 2, 25000.0)
+	if len(groups) != 2 {
+		t.Errorf("Expected 2 groups (k=2), got %d", len(groups))
+	}
+}
+
+// ─── Cooldown (FilterRecentlySent / RecordNotified) tests ────────────────────
+
+// TestFilterRecentlySent_SuppressesDuplicates verifies that a market notified
+// recently with the same direction is suppressed within the cooldown window.
+func TestFilterRecentlySent_SuppressesDuplicates(t *testing.T) {
+	store := storage.New(100, 50, "/tmp/test-cooldown-dup.json", 0644, 0755)
+	mon := New(store)
+
+	change := models.Change{
+		ID:             uuid.New().String(),
+		EventID:        "evt-1",
+		OldProbability: 0.50,
+		NewProbability: 0.60,
+		Magnitude:      0.10,
+		Direction:      "increase",
+		TimeWindow:     time.Hour,
+		DetectedAt:     time.Now(),
+	}
+	group := models.EventGroup{
+		EventID: "evt-1",
+		Markets: []models.Change{change},
+	}
+
+	// Record as notified
+	mon.RecordNotified([]models.EventGroup{group})
+
+	// Immediately filter with a long cooldown — should be suppressed
+	filtered := mon.FilterRecentlySent([]models.EventGroup{group}, time.Hour)
+	if len(filtered) != 0 {
+		t.Errorf("Expected 0 groups after suppressing duplicate, got %d", len(filtered))
+	}
+}
+
+// TestFilterRecentlySent_AllowsDirectionChange verifies that a market is NOT
+// suppressed when the direction flips (e.g., was going up, now going down).
+func TestFilterRecentlySent_AllowsDirectionChange(t *testing.T) {
+	store := storage.New(100, 50, "/tmp/test-cooldown-dir.json", 0644, 0755)
+	mon := New(store)
+
+	original := models.Change{
+		ID: uuid.New().String(), EventID: "evt-1",
+		OldProbability: 0.50, NewProbability: 0.60, Magnitude: 0.10,
+		Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now(),
+	}
+	reversed := models.Change{
+		ID: uuid.New().String(), EventID: "evt-1",
+		OldProbability: 0.60, NewProbability: 0.50, Magnitude: 0.10,
+		Direction: "decrease", TimeWindow: time.Hour, DetectedAt: time.Now(),
+	}
+	origGroup := models.EventGroup{EventID: "evt-1", Markets: []models.Change{original}}
+	mon.RecordNotified([]models.EventGroup{origGroup})
+
+	revGroup := models.EventGroup{EventID: "evt-1", Markets: []models.Change{reversed}}
+	filtered := mon.FilterRecentlySent([]models.EventGroup{revGroup}, time.Hour)
+	if len(filtered) != 1 {
+		t.Errorf("Expected 1 group (direction changed), got %d", len(filtered))
+	}
+}
+
+// TestFilterRecentlySent_AllowsDeterministicZoneEntry verifies that a market
+// entering the deterministic zone (>90% or <10%) is NOT suppressed even within
+// the cooldown window, when the previous notification was outside the zone.
+func TestFilterRecentlySent_AllowsDeterministicZoneEntry(t *testing.T) {
+	store := storage.New(100, 50, "/tmp/test-cooldown-detzone.json", 0644, 0755)
+	mon := New(store)
+
+	// Previous notification: increase to 85% (outside det zone)
+	prev := models.Change{
+		ID: uuid.New().String(), EventID: "evt-1",
+		OldProbability: 0.80, NewProbability: 0.85, Magnitude: 0.05,
+		Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now(),
+	}
+	prevGroup := models.EventGroup{EventID: "evt-1", Markets: []models.Change{prev}}
+	mon.RecordNotified([]models.EventGroup{prevGroup})
+
+	// New notification: increase to 92% (entering det zone for first time)
+	entering := models.Change{
+		ID: uuid.New().String(), EventID: "evt-1",
+		OldProbability: 0.85, NewProbability: 0.92, Magnitude: 0.07,
+		Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now(),
+	}
+	enteringGroup := models.EventGroup{EventID: "evt-1", Markets: []models.Change{entering}}
+	filtered := mon.FilterRecentlySent([]models.EventGroup{enteringGroup}, time.Hour)
+	if len(filtered) != 1 {
+		t.Errorf("Expected 1 group (entering det zone), got %d", len(filtered))
+	}
+}
+
+// TestFilterRecentlySent_NeverNil verifies FilterRecentlySent never returns nil.
+func TestFilterRecentlySent_NeverNil(t *testing.T) {
+	store := storage.New(100, 50, "/tmp/test-cooldown-nil.json", 0644, 0755)
+	mon := New(store)
+
+	result := mon.FilterRecentlySent([]models.EventGroup{}, time.Hour)
+	if result == nil {
+		t.Error("FilterRecentlySent should never return nil")
+	}
+}
+
+// TestFilterRecentlySent_PassesAfterCooldown verifies that a market IS passed
+// after the cooldown window expires.
+func TestFilterRecentlySent_PassesAfterCooldown(t *testing.T) {
+	store := storage.New(100, 50, "/tmp/test-cooldown-expire.json", 0644, 0755)
+	mon := New(store)
+
+	change := models.Change{
+		ID: uuid.New().String(), EventID: "evt-1",
+		OldProbability: 0.50, NewProbability: 0.60, Magnitude: 0.10,
+		Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now(),
+	}
+	group := models.EventGroup{EventID: "evt-1", Markets: []models.Change{change}}
+
+	// Manually set SentAt to 2 hours ago
+	mon.notifiedMarkets["evt-1"] = notifiedRecord{
+		Direction: "increase",
+		NewProb:   0.60,
+		SentAt:    time.Now().Add(-2 * time.Hour),
+	}
+
+	// Cooldown is 1 hour — should pass now
+	filtered := mon.FilterRecentlySent([]models.EventGroup{group}, time.Hour)
+	if len(filtered) != 1 {
+		t.Errorf("Expected 1 group after cooldown expired, got %d", len(filtered))
 	}
 }

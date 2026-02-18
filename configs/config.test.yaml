@@ -26,8 +26,8 @@ monitor:
   #
   # Example: a 7% drop on a $500K market with stable history scores ≈ 0.22 (passes at 0.4)
   # Example: a 0.4%→0.8% tail move on a $10K market scores ≈ 0.0008 (filtered at 0.4)
-  sensitivity: 0.4
-  top_k: 5
+  sensitivity: 0.5
+  top_k: 10
 
   # detection_intervals: number of poll_interval periods in the detection window.
   # Effective window = (detection_intervals + 1) × poll_interval.

@@ -286,18 +286,26 @@ func runMonitoringCycle(
 	// minScore by window duration is incorrect and creates a near-zero bar at 15m.
 	minScore := cfg.Monitor.MinCompositeScore()
 	eventsMap := buildEventsMap(allEvents)
-	topChanges := mon.ScoreAndRank(changes, eventsMap, minScore, cfg.Monitor.TopK, cfg.Polymarket.Volume24hrMin)
+	topGroups := mon.ScoreAndRank(changes, eventsMap, minScore, cfg.Monitor.TopK, cfg.Polymarket.Volume24hrMin)
 
-	if len(topChanges) > 0 {
-		logger.Info("Scored changes: %d detected, %d passed quality bar (min_score=%.4f)",
-			len(changes), len(topChanges), minScore)
+	// Suppress recently-sent markets (same direction, within cooldown window)
+	topGroups = mon.FilterRecentlySent(topGroups, detectionWindow)
+
+	if len(topGroups) > 0 {
+		totalMarkets := 0
+		for _, g := range topGroups {
+			totalMarkets += len(g.Markets)
+		}
+		logger.Info("Scored changes: %d detected, %d groups (%d markets) passed quality bar (min_score=%.4f)",
+			len(changes), len(topGroups), totalMarkets, minScore)
 
 		if cfg.Telegram.Enabled && telegramClient != nil {
-			logger.Debug("Sending top %d changes to Telegram", len(topChanges))
-			if err := telegramClient.Send(topChanges); err != nil {
+			logger.Debug("Sending top %d event groups to Telegram", len(topGroups))
+			if err := telegramClient.Send(topGroups); err != nil {
 				logger.Error("Failed to send Telegram notification: %v", err)
 			} else {
-				logger.Info("Sent Telegram notification with top %d changes", len(topChanges))
+				logger.Info("Sent Telegram notification with top %d event groups", len(topGroups))
+				mon.RecordNotified(topGroups)
 			}
 		} else {
 			logger.Debug("Changes detected but Telegram notifications disabled or client not initialized")
