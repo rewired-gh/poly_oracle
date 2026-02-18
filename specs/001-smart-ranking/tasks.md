@@ -140,20 +140,20 @@ No setup tasks required for this feature.
 
 **Goal**: Wire the new scoring into the main monitoring cycle. Replace the `threshold + RankChanges` call chain with `ScoreAndRank` driven by `sensitivity`. Update config documentation.
 
-**Independent Test**: Run `make build` and then `./bin/poly-oracle --config configs/config.yaml` for one cycle; observe log line `"Starting monitoring service (sensitivity: ..."` and verify notification count changes when sensitivity is adjusted.
+**Independent Test**: Run `make build` and then `./bin/polyoracle --config configs/config.yaml` for one cycle; observe log line `"Starting monitoring service (sensitivity: ..."` and verify notification count changes when sensitivity is adjusted.
 
 **Depends on**: T002 (Sensitivity config), T008 (ScoreAndRank), T009 (DetectChanges signature change)
 
-- [X] T017 [P] [US2] Update `runMonitoringCycle` in `cmd/poly-oracle/main.go`:
+- [X] T017 [P] [US2] Update `runMonitoringCycle` in `cmd/polyoracle/main.go`:
   (a) Change `mon.DetectChanges(convertEvents(allEvents), cfg.Monitor.Threshold, cfg.Monitor.Window)` to `mon.DetectChanges(convertEvents(allEvents), cfg.Monitor.Window)`.
   (b) After detection, add: `eventsMap := buildEventsMap(allEvents)`.
   (c) Replace `mon.RankChanges(changes, cfg.Monitor.TopK)` with `mon.ScoreAndRank(changes, eventsMap, cfg.Monitor.MinCompositeScore(), cfg.Monitor.TopK)`.
   (d) Change the Telegram send condition from `if len(changes) > 0 && cfg.Telegram.Enabled` to `if len(topChanges) > 0 && cfg.Telegram.Enabled`.
   (e) Update the log line `"Detected N significant changes"` to also log how many passed the quality bar.
 
-- [X] T018 [P] [US2] Add `buildEventsMap(events []*models.Event) map[string]*models.Event` helper at the bottom of `cmd/poly-oracle/main.go`. Creates and returns a map keyed by `event.ID`.
+- [X] T018 [P] [US2] Add `buildEventsMap(events []*models.Event) map[string]*models.Event` helper at the bottom of `cmd/polyoracle/main.go`. Creates and returns a map keyed by `event.ID`.
 
-- [X] T019 [US2] Update startup log in `cmd/poly-oracle/main.go` from:
+- [X] T019 [US2] Update startup log in `cmd/polyoracle/main.go` from:
   `logger.Info("Starting monitoring service (poll: %v, threshold: %.2f, window: %v, top_k: %d)", ..., cfg.Monitor.Threshold, ...)`
   to:
   `logger.Info("Starting monitoring service (poll: %v, sensitivity: %.2f, window: %v, top_k: %d)", ..., cfg.Monitor.Sensitivity, ...)`
@@ -185,7 +185,7 @@ No setup tasks required for this feature.
 
 **Independent Test**: Set `sensitivity: 1.0` in config, run one cycle against the real API (or fixture), confirm no Telegram message is sent even if raw changes exist.
 
-- [X] T021 [US3] Verify zero-emission path in `cmd/poly-oracle/main.go`: confirm that when `len(topChanges) == 0`, the log emits `"No changes above quality bar this cycle"` (or similar) and the Telegram client is NOT called. Add that log line if missing.
+- [X] T021 [US3] Verify zero-emission path in `cmd/polyoracle/main.go`: confirm that when `len(topChanges) == 0`, the log emits `"No changes above quality bar this cycle"` (or similar) and the Telegram client is NOT called. Add that log line if missing.
 
 **Checkpoint**: `make test` passes. `go test ./...` passes.
 
@@ -253,8 +253,8 @@ Task: "TestTrajectoryConsistency in internal/monitor/monitor_test.go" # T014
 ### User Story 2 — launch config and docs in parallel
 
 ```bash
-Task: "Update runMonitoringCycle in cmd/poly-oracle/main.go"    # T017
-Task: "Add buildEventsMap in cmd/poly-oracle/main.go"           # T018
+Task: "Update runMonitoringCycle in cmd/polyoracle/main.go"    # T017
+Task: "Add buildEventsMap in cmd/polyoracle/main.go"           # T018
 Task: "Update monitor: section in configs/config.yaml.example"  # T020
 ```
 

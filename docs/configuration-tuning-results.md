@@ -176,7 +176,7 @@ v.SetDefault("monitor.threshold", 0.04)
 
 ### 2. Enhanced Logging
 
-**File**: `cmd/poly-oracle/main.go`
+**File**: `cmd/polyoracle/main.go`
 
 - Replaced standard `log` package with custom `logger` package
 - Added debug-level logging throughout the monitoring cycle
@@ -292,7 +292,7 @@ Debug logs will show:
 
 1. **`internal/config/config.go`** - Updated default parameters
 2. **`internal/logger/logger.go`** - New leveled logging package
-3. **`cmd/poly-oracle/main.go`** - Integrated debug logging
+3. **`cmd/polyoracle/main.go`** - Integrated debug logging
 4. **`configs/config.yaml.example`** - Updated with production defaults
 5. **`configs/config.test.yaml`** - New test configuration
 
@@ -304,14 +304,14 @@ All tests pass:
 
 ```bash
 $ go test ./...
-ok      github.com/poly-oracle/internal/config
-ok      github.com/poly-oracle/internal/models
-ok      github.com/poly-oracle/internal/monitor
-ok      github.com/poly-oracle/internal/polymarket
-ok      github.com/poly-oracle/internal/storage
-ok      github.com/poly-oracle/internal/telegram
+ok      github.com/polyoracle/internal/config
+ok      github.com/polyoracle/internal/models
+ok      github.com/polyoracle/internal/monitor
+ok      github.com/polyoracle/internal/polymarket
+ok      github.com/polyoracle/internal/storage
+ok      github.com/polyoracle/internal/telegram
 
-$ go build ./cmd/poly-oracle
+$ go build ./cmd/polyoracle
 ✓ Build successful
 ```
 

@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/poly-oracle/internal/models"
+	"github.com/rewired-gh/polyoracle/internal/models"
 )
 
 // Storage provides thread-safe in-memory storage with file-based persistence
@@ -48,7 +48,7 @@ type PersistenceFile struct {
 func New(maxMarkets, maxSnapshotsPerEvent int, filePath string, filePermissions, dirPermissions os.FileMode) *Storage {
 	// Use OS-appropriate tmp directory if no path provided
 	if filePath == "" {
-		filePath = filepath.Join(os.TempDir(), "poly-oracle", "data.json")
+		filePath = filepath.Join(os.TempDir(), "polyoracle", "data.json")
 	}
 
 	return &Storage{

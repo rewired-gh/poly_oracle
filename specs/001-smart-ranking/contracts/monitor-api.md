@@ -76,7 +76,7 @@ full Monitor instance. Each function is a pure computation with no side effects.
 
 ## Callers — Required Updates
 
-### `cmd/poly-oracle/main.go`
+### `cmd/polyoracle/main.go`
 
 ```go
 // BEFORE

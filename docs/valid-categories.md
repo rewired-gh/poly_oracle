@@ -175,7 +175,7 @@ categories:
 Run the service with debug logging:
 
 ```bash
-./bin/poly-oracle --config configs/config.yaml
+./bin/polyoracle --config configs/config.yaml
 ```
 
 Look for:

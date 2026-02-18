@@ -1,4 +1,4 @@
-module github.com/poly-oracle
+module github.com/rewired-gh/polyoracle
 
 go 1.24.5
 

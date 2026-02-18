@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/poly-oracle/internal/models"
-	"github.com/poly-oracle/internal/storage"
+	"github.com/rewired-gh/polyoracle/internal/models"
+	"github.com/rewired-gh/polyoracle/internal/storage"
 )
 
 // ─── Existing DetectChanges tests (T016: updated to remove threshold arg) ────

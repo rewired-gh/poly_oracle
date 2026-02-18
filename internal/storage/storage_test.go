@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/poly-oracle/internal/models"
+	"github.com/rewired-gh/polyoracle/internal/models"
 )
 
 func TestStorage_AddAndGetMarket(t *testing.T) {
@@ -208,8 +208,8 @@ func TestStorage_EmptyFilePathUsesTmpDir(t *testing.T) {
 	// Test that empty file path uses OS tmp directory
 	s := New(100, 50, "", 0644, 0755) // Empty file path
 
-	// Verify file path contains OS tmp directory and poly-oracle subdirectory
-	expectedSuffix := "poly-oracle/data.json"
+	// Verify file path contains OS tmp directory and polyoracle subdirectory
+	expectedSuffix := "polyoracle/data.json"
 	if s.filePath == "" {
 		t.Error("File path should not be empty")
 	}
@@ -222,7 +222,7 @@ func TestStorage_EmptyFilePathUsesTmpDir(t *testing.T) {
 }
 
 func TestStorage_SaveAndLoad(t *testing.T) {
-	tempFile := "/tmp/test-poly-oracle-save.json"
+	tempFile := "/tmp/test-polyoracle-save.json"
 	defer func() { _ = os.Remove(tempFile) }()
 
 	s := New(100, 50, tempFile, 0644, 0755)
@@ -505,7 +505,7 @@ func TestStorage_RotateMarkets(t *testing.T) {
 }
 
 func TestStorage_MigrateToCompositeIDs(t *testing.T) {
-	tempFile := "/tmp/test-poly-oracle-migrate.json"
+	tempFile := "/tmp/test-polyoracle-migrate.json"
 	defer func() { _ = os.Remove(tempFile) }()
 
 	// Create v1.0 format data file with old single-market ID format

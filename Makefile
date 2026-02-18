@@ -1,7 +1,7 @@
 .PHONY: build test run clean docker-build install
 
 # Binary name
-BINARY_NAME=poly-oracle
+BINARY_NAME=polyoracle
 BINARY_PATH=bin/$(BINARY_NAME)
 
 # Go parameters

@@ -1,208 +1,190 @@
-# Poly Oracle - Event Probability Monitor
+# Polyoracle
 
-A lightweight Go service that monitors Polymarket prediction market events for significant probability changes and sends Telegram notifications about the top k events with the most drastic changes.
+A lightweight Go service that monitors Polymarket prediction markets for significant probability shifts and delivers Telegram alerts for the top-K highest-signal events.
 
-## Features
+## How It Works
 
-- **Automatic Monitoring**: Polls Polymarket API for probability updates at configurable intervals
-- **Smart Detection**: Detects significant probability changes using threshold-based algorithm
-- **Telegram Notifications**: Sends formatted alerts to your Telegram account
-- **Configurable**: Flexible YAML configuration with reasonable defaults
-- **Lightweight**: Designed for deployment on minimal VPS infrastructure
-- **Single Binary**: Easy deployment - just copy and run
-- **Docker & systemd**: Supports containerized and daemon deployment
+Each polling cycle:
+
+1. Fetches events from the Polymarket Gamma + CLOB APIs, filtered by category and volume thresholds
+2. Stores probability snapshots in memory (persisted to disk)
+3. Detects changes over a rolling detection window using a four-factor composite signal score:
+
+   ```
+   score = KL(p_new ∥ p_old) × log_volume_weight × historical_SNR × trajectory_consistency
+   ```
+
+4. Applies pre-score hard filters (minimum absolute change, minimum base probability) to suppress tail-probability noise
+5. Groups per-market changes by parent event, ranks by best score, deduplicates against recent notifications
+6. Sends a Telegram message for the top-K event groups
+
+Multi-market events (e.g., "Bitcoin hits $X by date Y") are tracked per market with composite IDs (`EventID:MarketID`).
 
 ## Quick Start
 
 ### Prerequisites
 
-- Go 1.24 or later
-- Telegram account
-- Telegram bot token ([create one with @BotFather](https://t.me/botfather))
+- Go 1.24+
+- Telegram bot token — create one with [@BotFather](https://t.me/botfather)
+- Telegram chat ID — get yours from [@userinfobot](https://t.me/userinfobot)
 
-### Installation
+### Setup
 
 ```bash
-# Clone repository
 git clone <repository-url>
-cd poly-oracle
+cd polyoracle
 
-# Install dependencies
 make install
 
-# Create configuration
 cp configs/config.yaml.example configs/config.yaml
+# Edit configs/config.yaml and add your bot_token and chat_id
 
-# Edit configuration with your Telegram credentials
-vim configs/config.yaml
-
-# Build and run
 make run
 ```
 
-### Configuration
+## Configuration
 
-Edit `configs/config.yaml`:
+`configs/config.yaml`:
 
 ```yaml
-telegram:
-  bot_token: "YOUR_BOT_TOKEN"  # From @BotFather
-  chat_id: "YOUR_CHAT_ID"      # From @userinfobot
-  enabled: true
+polymarket:
+  poll_interval: 15m       # How often to poll Polymarket
+  limit: 5000              # Max events to fetch per cycle
+  categories:
+    - geopolitics
+    - tech
+    - finance
+    - world
+  # Volume pre-filters (OR logic): events pass if they meet any threshold
+  volume_24hr_min: 25000   # $25K minimum 24hr volume
+  volume_1wk_min: 100000   # $100K minimum weekly volume
+  volume_1mo_min: 250000   # $250K minimum monthly volume
 
 monitor:
-  threshold: 0.10  # 10% change threshold
-  window: 1h       # 1 hour time window
-  top_k: 10        # Top 10 events to report
+  sensitivity: 0.5         # Composite score threshold (0=permissive, 1=strict)
+                           # 0.3 → noisy, 0.5 → ~2-3 alerts/cycle (recommended), 0.7 → strict
+  top_k: 10                # Max event groups per notification
+  detection_intervals: 4   # Window = (detection_intervals + 1) × poll_interval
+  min_abs_change: 0.03     # Minimum absolute probability shift (3pp)
+  min_base_prob: 0.05      # Ignore markets below 5% (tail-probability zone)
 
-polymarket:
-  categories:
-    - politics
-    - sports
-    - crypto
+telegram:
+  bot_token: "YOUR_BOT_TOKEN"
+  chat_id: "YOUR_CHAT_ID"
+  enabled: true
+
+storage:
+  max_events: 10000
+  max_snapshots_per_event: 672   # 7 days of 15-min snapshots
+  max_file_size_mb: 2048
+
+logging:
+  level: info              # debug, info, warn, error
 ```
+
+### Configuration Reference
+
+| Section | Field | Default | Description |
+|---------|-------|---------|-------------|
+| polymarket | poll_interval | 15m | Polling frequency |
+| polymarket | categories | geopolitics, tech, finance, world | Categories to monitor |
+| polymarket | volume_24hr_min | 25000 | Min $24hr volume (OR filter) |
+| polymarket | volume_1wk_min | 100000 | Min weekly volume (OR filter) |
+| polymarket | volume_1mo_min | 250000 | Min monthly volume (OR filter) |
+| monitor | sensitivity | 0.5 | Quality threshold (sensitivity² × 0.05 = minScore) |
+| monitor | top_k | 10 | Max event groups per alert |
+| monitor | detection_intervals | 4 | Polling periods per detection window |
+| monitor | min_abs_change | 0.03 | Min absolute probability change (fraction) |
+| monitor | min_base_prob | 0.05 | Min base probability to avoid tail-zone KL inflation |
+| storage | max_events | 10000 | Max events tracked in memory |
+| storage | max_snapshots_per_event | 672 | Snapshot history per market |
+| telegram | bot_token | — | Required when telegram.enabled = true |
+| telegram | chat_id | — | Required when telegram.enabled = true |
 
 ## Deployment
 
-### Option 1: Binary
+### Binary
 
 ```bash
 make build
-./bin/poly-oracle --config configs/config.yaml
+./bin/polyoracle --config configs/config.yaml
 ```
 
-### Option 2: Docker
+### Docker
 
 ```bash
 make docker-build
 docker run -d \
-  --name poly-oracle \
+  --name polyoracle \
   -v $(PWD)/configs:/app/configs \
   -v $(PWD)/data:/app/data \
-  poly-oracle:latest
+  polyoracle:latest
 ```
 
-### Option 3: systemd
+### systemd
 
 ```bash
-sudo cp deployments/systemd/poly-oracle.service /etc/systemd/system/
-sudo systemctl enable poly-oracle
-sudo systemctl start poly-oracle
-```
-
-## Usage
-
-1. Configure your monitoring parameters in `config.yaml`
-2. Start the service
-3. Receive Telegram notifications when significant probability changes occur
-
-### Example Notification
-
-```
-🚨 Top 10 Probability Changes Detected
-
-1. Will candidate X win the election?
-   📊 Change: +15% (60% → 75%)
-   ⏱ Window: 1h
-   📅 Detected: 2026-02-16 10:30:00
-
----
-Configured threshold: 10%
-Monitoring window: 1h
+sudo cp deployments/systemd/polyoracle.service /etc/systemd/system/
+sudo systemctl enable --now polyoracle
 ```
 
 ## Development
 
-### Run Tests
-
 ```bash
-make test
-```
-
-### Build for Multiple Platforms
-
-```bash
-# Linux AMD64
-GOOS=linux GOARCH=amd64 make build
-
-# Linux ARM64
-GOOS=linux GOARCH=arm64 make build
-
-# macOS
-GOOS=darwin GOARCH=amd64 make build
+make test           # Run all tests
+make test-coverage  # With coverage report
+make lint           # golangci-lint
+make fmt            # gofmt
+make dev            # Auto-reload on file change (requires entr)
 ```
 
 ### Project Structure
 
 ```
-cmd/poly-oracle/          # Application entry point
-internal/                 # Private application code
-  ├── config/            # Configuration management
-  ├── models/            # Domain entities
-  ├── polymarket/        # Polymarket API client
-  ├── monitor/           # Change detection logic
-  ├── storage/           # Data persistence
-  └── telegram/          # Telegram client
-configs/                 # Configuration files
-deployments/             # Docker & systemd files
+cmd/polyoracle/        Entry point (main.go)
+internal/
+  config/               YAML config loading and validation
+  logger/               Structured logger (debug/info/warn/error)
+  models/               Domain types: Event, Market, Snapshot, Change
+  polymarket/           Gamma + CLOB API client
+  monitor/              Composite scoring, ranking, deduplication
+  storage/              In-memory store with file persistence
+  telegram/             Telegram bot client (MarkdownV2 formatting)
+configs/                config.yaml.example, config.test.yaml
+deployments/            Dockerfile, systemd service
+specs/                  Feature spec documents
+docs/                   Tuning notes, valid category reference
 ```
 
-## Architecture
+## Example Notification
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Poly Oracle Service                   │
-├─────────────────────────────────────────────────────────┤
-│  Config Loader → Monitor Service → Telegram Client      │
-│                     ↓                                    │
-│              Polymarket Client                           │
-│                     ↓                                    │
-│                  Storage                                 │
-└─────────────────────────────────────────────────────────┘
+🚨 Notable Odds Movements
 
-Data Flow:
-1. Load configuration from YAML
-2. Poll Polymarket API every N minutes
-3. Store probability snapshots in memory
-4. Detect significant changes using threshold algorithm
-5. Send Telegram notifications for top k changes
-6. Persist state to disk periodically
+📅 Detected: 2026-02-18 10:30:00
+
+1. Will candidate X win the election?
+   📈 15.0% (60.0% → 75.0%) ⏱ 75m
+
+2. Will Bitcoin hit $100K by March?
+   🎯 Will Bitcoin hit $100K by March?
+   📉 8.2% (72.3% → 64.1%) ⏱ 75m
 ```
 
-## Configuration Reference
+## Gotchas
 
-| Section | Field | Type | Default | Description |
-|---------|-------|------|---------|-------------|
-| polymarket | poll_interval | duration | 1h | How often to poll for updates |
-| polymarket | categories | []string | ["geopolitics", "tech", "finance"] | Categories to monitor |
-| monitor | threshold | float | 0.05 | Minimum change magnitude (5%) |
-| monitor | window | duration | 1h | Time window for detection |
-| monitor | top_k | int | 5 | Number of events to notify |
-| telegram | bot_token | string | "" | Telegram bot token |
-| telegram | chat_id | string | "" | Telegram chat ID |
-| storage | max_events | int | 1000 | Maximum events to track |
-| storage | max_snapshots_per_event | int | 24 | Snapshots per event |
+- **Config file required**: Service exits without a valid `configs/config.yaml`
+- **Polymarket category field**: The API `category` field is frequently null; filtering uses `tags[]` slugs
+- **Tail-probability suppression**: Markets below `min_base_prob` (default 5%) are excluded because KL divergence is structurally unreliable at the tails
+- **Cooldown deduplication**: Markets recently notified in the same direction are suppressed unless they cross into the high-conviction zone (>90% or <10%)
+- **Storage path**: Defaults to `/tmp/polyoracle/data.json`
 
-## Contributing
+## Dependencies
 
-Contributions welcome! Please ensure all code:
-- Follows Go best practices
-- Includes unit tests
-- Passes `golangci-lint`
-- Maintains constitutional principles (simplicity, testability, robustness)
+- [Viper](https://github.com/spf13/viper) — configuration management
+- [go-telegram-bot-api](https://github.com/go-telegram-bot-api/telegram-bot-api) — Telegram integration
+- [google/uuid](https://github.com/google/uuid) — change record IDs
 
 ## License
 
 MIT
-
-## Support
-
-- **Documentation**: See `specs/001-probability-monitor/` directory
-- **Issues**: Report bugs on project issue tracker
-
-## Acknowledgments
-
-Built with:
-- [Viper](https://github.com/spf13/viper) - Configuration management
-- [Telegram Bot API](https://github.com/go-telegram-bot-api/telegram-bot-api) - Telegram integration
-- [Polymarket API](https://docs.polymarket.com/) - Market data

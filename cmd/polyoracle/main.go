@@ -10,13 +10,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/poly-oracle/internal/config"
-	"github.com/poly-oracle/internal/logger"
-	"github.com/poly-oracle/internal/models"
-	"github.com/poly-oracle/internal/monitor"
-	"github.com/poly-oracle/internal/polymarket"
-	"github.com/poly-oracle/internal/storage"
-	"github.com/poly-oracle/internal/telegram"
+	"github.com/rewired-gh/polyoracle/internal/config"
+	"github.com/rewired-gh/polyoracle/internal/logger"
+	"github.com/rewired-gh/polyoracle/internal/models"
+	"github.com/rewired-gh/polyoracle/internal/monitor"
+	"github.com/rewired-gh/polyoracle/internal/polymarket"
+	"github.com/rewired-gh/polyoracle/internal/storage"
+	"github.com/rewired-gh/polyoracle/internal/telegram"
 )
 
 var configPath = flag.String("config", "configs/config.yaml", "Path to configuration file")

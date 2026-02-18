@@ -1,9 +1,9 @@
-# poly_oracle Development Guidelines
+# polyoracle Development Guidelines
 
 ## Project Structure
 
 ```text
-cmd/poly-oracle/        # Application entry point (main.go)
+cmd/polyoracle/        # Application entry point (main.go)
 internal/               # Private application code
   ├── config/          # Configuration loading and validation
   ├── logger/          # Structured logging (debug/info/warn/error/fatal)
@@ -26,7 +26,7 @@ bin/                   # Built binaries
 ```bash
 # Development
 make install           # Install dependencies (go mod download)
-make build             # Build binary to bin/poly-oracle
+make build             # Build binary to bin/polyoracle
 make test              # Run all tests
 make test-coverage     # Run tests with coverage
 make run               # Build and run with configs/config.yaml
@@ -99,9 +99,9 @@ Tests located: `internal/**/*_test.go`
 
 ## Deployment Options
 
-1. **Binary**: `make build && ./bin/poly-oracle --config configs/config.yaml`
+1. **Binary**: `make build && ./bin/polyoracle --config configs/config.yaml`
 2. **Docker**: `make docker-build && make docker-run`
-3. **systemd**: Copy `deployments/systemd/poly-oracle.service` to `/etc/systemd/system/`
+3. **systemd**: Copy `deployments/systemd/polyoracle.service` to `/etc/systemd/system/`
 
 ## Development Workflow
 
@@ -128,7 +128,7 @@ make run
 
 ## Key Files
 
-- `cmd/poly-oracle/main.go` - Entry point, orchestration
+- `cmd/polyoracle/main.go` - Entry point, orchestration
 - `configs/config.yaml` - User configuration (gitignored, copy from example)
 - `configs/config.yaml.example` - Template with sensible defaults
 - `configs/config.test.yaml` - Test-time config overrides (modify for local testing)
@@ -140,7 +140,7 @@ make run
 
 - **Config file required**: Service fails without valid config.yaml
 - **Telegram credentials**: Must be set before running
-- **Storage path**: Default uses OS tmp dir (/tmp/poly-oracle/data.json)
+- **Storage path**: Default uses OS tmp dir (/tmp/polyoracle/data.json)
 - **Categories filter**: Only monitors events in configured categories
 - **Volume filter**: Lower thresholds needed for niche categories (geopolitics/tech/finance)
 - **Telegram MarkdownV2**: Notification messages use MarkdownV2 format with automatic escaping of special characters

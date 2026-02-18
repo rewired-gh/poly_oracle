@@ -1,4 +1,4 @@
-# Poly Oracle Configuration
+# Polyoracle Configuration
 # Copy to config.yaml and set your Telegram credentials
 #
 # Single interval (poll_interval) drives: polling, detection window, persistence.

@@ -6,7 +6,7 @@
 
 ```bash
 make install   # go mod download
-make build     # builds to bin/poly-oracle
+make build     # builds to bin/polyoracle
 make test      # all tests must pass
 ```
 
@@ -28,7 +28,7 @@ Expected: all 8+ table-driven cases pass, output shows specific scoring values.
 #   monitor:
 #     sensitivity: 0.5
 
-./bin/poly-oracle --config configs/config.yaml &
+./bin/polyoracle --config configs/config.yaml &
 # Look for startup log line mentioning sensitivity
 # e.g.: "Starting monitoring service (sensitivity: 0.50, window: 1h, top_k: 5)"
 kill %1
@@ -38,13 +38,13 @@ kill %1
 
 ```bash
 # Set sensitivity: 0.1 in config (permissive)
-./bin/poly-oracle --config configs/config.yaml &
+./bin/polyoracle --config configs/config.yaml &
 # After one cycle, observe number of "Detected N significant changes" in logs
 # and "Sending top M to Telegram" (should be higher M)
 kill %1
 
 # Set sensitivity: 0.9 in config (strict)
-./bin/poly-oracle --config configs/config.yaml &
+./bin/polyoracle --config configs/config.yaml &
 # After one cycle, observe M is smaller (possibly 0)
 kill %1
 ```
@@ -54,7 +54,7 @@ kill %1
 ```bash
 # Set sensitivity: 1.0 in config.yaml
 # Run one cycle
-./bin/poly-oracle --config configs/config.yaml
+./bin/polyoracle --config configs/config.yaml
 
 # Confirm in logs:
 #   "Monitoring cycle completed" without "Sent Telegram notification"

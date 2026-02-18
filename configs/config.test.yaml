@@ -1,4 +1,4 @@
-# Poly Oracle Test Configuration
+# Polyoracle Test Configuration
 # 15-minute polling for testing, targeting 0-3 events per cycle.
 # Single interval (poll_interval) drives: polling, detection window, persistence.
 
@@ -25,7 +25,7 @@ monitor:
   #   0.5 → minScore=0.0125  — stricter; only strong moves on high-volume markets pass
   #   0.7 → minScore=0.0245  — additional bar for any moves not caught by min_abs_change/min_base_prob
   #
-  sensitivity: 0.4
+  sensitivity: 0.5
   top_k: 10
 
   # detection_intervals: number of poll_interval periods in the detection window.

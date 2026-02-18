@@ -1,0 +1,27 @@
+[Unit]
+Description=Polyoracle - Event Probability Monitor
+After=network.target
+
+[Service]
+Type=simple
+User=polyoracle
+Group=polyoracle
+WorkingDirectory=/opt/polyoracle
+ExecStart=/opt/polyoracle/polyoracle --config /opt/polyoracle/configs/config.yaml
+Restart=on-failure
+RestartSec=5s
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=polyoracle
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Resource limits
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

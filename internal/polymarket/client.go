@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/poly-oracle/internal/models"
+	"github.com/rewired-gh/polyoracle/internal/models"
 )
 
 // Client provides access to Polymarket API

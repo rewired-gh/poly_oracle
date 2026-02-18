@@ -21,9 +21,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/poly-oracle/internal/logger"
-	"github.com/poly-oracle/internal/models"
-	"github.com/poly-oracle/internal/storage"
+	"github.com/rewired-gh/polyoracle/internal/logger"
+	"github.com/rewired-gh/polyoracle/internal/models"
+	"github.com/rewired-gh/polyoracle/internal/storage"
 )
 
 // notifiedRecord tracks a previously sent notification for cooldown deduplication.

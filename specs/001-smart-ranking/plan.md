@@ -17,7 +17,7 @@ minimum composite score floor via `sensitivity² × 0.05`. Emit 0–K notificati
 based solely on quality, never forcing K.
 
 The entire change is contained within `internal/monitor`, `internal/config`, `internal/models`,
-`cmd/poly-oracle/main.go`, and `configs/config.yaml.example`. No new dependencies. No new
+`cmd/polyoracle/main.go`, and `configs/config.yaml.example`. No new dependencies. No new
 storage structures. No new API calls.
 
 ---
@@ -95,7 +95,7 @@ internal/
     └── monitor_test.go        # 8+ table-driven scoring tests + update existing tests
 
 cmd/
-└── poly-oracle/
+└── polyoracle/
     └── main.go                # Update runMonitoringCycle: remove threshold arg, use ScoreAndRank
 
 configs/
@@ -254,7 +254,7 @@ Also add `TestKLDivergence`, `TestLogVolumeWeight`, `TestHistoricalSNR`,
 
 ---
 
-### 5. `cmd/poly-oracle/main.go`
+### 5. `cmd/polyoracle/main.go`
 
 In `runMonitoringCycle`:
 

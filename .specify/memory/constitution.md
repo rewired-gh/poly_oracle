@@ -26,7 +26,7 @@ Templates requiring updates:
 Follow-up TODOs: None — all placeholders resolved.
 -->
 
-# Poly Oracle Constitution
+# Polyoracle Constitution
 
 ## Core Principles
 

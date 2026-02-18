@@ -1,4 +1,4 @@
-// Package models defines the core domain entities for the poly-oracle application.
+// Package models defines the core domain entities for the polyoracle application.
 // These models represent prediction markets, probability snapshots, and detected changes.
 // All models include built-in validation to ensure data integrity throughout the application.
 //
