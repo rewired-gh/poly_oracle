@@ -184,7 +184,3 @@ docs/                   Tuning notes, valid category reference
 - [Viper](https://github.com/spf13/viper) — configuration management
 - [go-telegram-bot-api](https://github.com/go-telegram-bot-api/telegram-bot-api) — Telegram integration
 - [google/uuid](https://github.com/google/uuid) — change record IDs
-
-## License
-
-MIT
