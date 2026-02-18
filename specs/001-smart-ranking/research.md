@@ -135,17 +135,27 @@ achievable only by significant moves (≥ 8%) on liquid markets (≥ $500K) with
 
 ## 6. Multi-Market Event Volume Handling
 
-**Decision**: Use event-level `Volume24hr` for the volume weight, shared across all markets
-of the same event.
+**Decision**: Use per-market volume for scoring, estimating `Volume24hr` proportionally
+from event-level 24hr volume based on each market's share of weekly volume.
 
-**Rationale**: The Gamma API provides volume at the event level, not per-market. For a
-multi-market event "Will Bitcoin hit $X?", the total event volume reflects aggregate market
-attention and capital. Using it for all markets in the event is correct: informed traders
-participate at the event level; any market within the event benefits from that liquidity signal.
+**Rationale**: The Gamma API provides per-market volume fields (`volume1wk`, `volume1mo`)
+that differ significantly across markets within the same event. For example, in a
+"MicroStrategy sells Bitcoin" event:
+- "Sells any Bitcoin in 2025?" has $17.9M volume (97% of total)
+- "Sells by Dec 31, 2026?" has $280K volume (1.5% of total)
+
+Using event-level volume for all markets would incorrectly boost the score of low-volume
+markets. The API does not provide `volume24hr` per market, so we estimate it:
+
+```
+market_volume24hr = event_volume24hr × (market_volume1wk / event_volume1wk)
+```
+
+**Fallback**: When `event_volume1wk` is 0 or `market_volume1wk` is 0, fall back to
+event-level `volume24hr`.
 
 **Key architectural point**: Each market in an event has a composite ID `EventID:MarketID`
-and its own snapshot history. The `Event` model (keyed by composite ID) carries the event-level
-`Volume24hr`. This is already the case in the current codebase — no change needed.
+and its own snapshot history. Volume is stored per-market in the `Market` model.
 
 ---
 

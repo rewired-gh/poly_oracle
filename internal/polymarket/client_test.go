@@ -371,6 +371,78 @@ func TestFetchEvents_MultiMarketMaxProbability(t *testing.T) {
 	}
 }
 
+func TestFetchEvents_MultiMarketVolumeAllocation(t *testing.T) {
+	// Test that multi-market events allocate volume proportionally to each market
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		events := []PolymarketEvent{
+			{
+				ID:         "event-1",
+				Title:      "Multi-market with different volumes",
+				Category:   "",
+				Active:     true,
+				Closed:     false,
+				Volume24hr: 100000.0,  // Total 24hr volume
+				Volume1wk:  1000000.0, // Total 1wk volume (used for proportional allocation)
+				Markets: []PolymarketMarket{
+					{
+						ID:            "market-1",
+						Question:      "High volume market",
+						Outcomes:      "[\"Yes\", \"No\"]",
+						OutcomePrices: "[\"0.70\", \"0.30\"]",
+						Volume1wk:     800000.0, // 80% of weekly volume
+						Volume1mo:     3000000.0,
+					},
+					{
+						ID:            "market-2",
+						Question:      "Low volume market",
+						Outcomes:      "[\"Yes\", \"No\"]",
+						OutcomePrices: "[\"0.40\", \"0.60\"]",
+						Volume1wk:     200000.0, // 20% of weekly volume
+						Volume1mo:     800000.0,
+					},
+				},
+				Tags: []PolymarketTag{
+					{ID: "1", Label: "Politics", Slug: "politics"},
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(events); err != nil {
+			t.Errorf("Failed to encode events: %v", err)
+		}
+	}))
+	defer mockServer.Close()
+
+	client := NewClient(mockServer.URL, "https://clob.polymarket.com", 30*time.Second)
+
+	ctx := context.Background()
+	events, err := client.FetchEvents(ctx, []string{"politics"}, 0, 0, 0, true, 10)
+	if err != nil {
+		t.Fatalf("FetchEvents failed: %v", err)
+	}
+
+	// Should get 2 markets
+	if len(events) != 2 {
+		t.Fatalf("Expected 2 markets, got %d", len(events))
+	}
+
+	// Market 1 should have 80% of 24hr volume (80000)
+	if events[0].Volume24hr != 80000.0 {
+		t.Errorf("Market 1: Expected Volume24hr=80000 (80%%), got %f", events[0].Volume24hr)
+	}
+	if events[0].Volume1wk != 800000.0 {
+		t.Errorf("Market 1: Expected Volume1wk=800000, got %f", events[0].Volume1wk)
+	}
+
+	// Market 2 should have 20% of 24hr volume (20000)
+	if events[1].Volume24hr != 20000.0 {
+		t.Errorf("Market 2: Expected Volume24hr=20000 (20%%), got %f", events[1].Volume24hr)
+	}
+	if events[1].Volume1wk != 200000.0 {
+		t.Errorf("Market 2: Expected Volume1wk=200000, got %f", events[1].Volume1wk)
+	}
+}
+
 func TestParseMarketProbabilities(t *testing.T) {
 	tests := []struct {
 		name        string

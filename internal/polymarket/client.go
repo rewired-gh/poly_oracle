@@ -57,12 +57,15 @@ type PolymarketTag struct {
 
 // PolymarketMarket represents a market from Polymarket API
 type PolymarketMarket struct {
-	ID            string `json:"id"`
-	ConditionID   string `json:"conditionId"`
-	Question      string `json:"question"`
-	Outcomes      string `json:"outcomes"`      // JSON string: "[\"Yes\", \"No\"]"
-	OutcomePrices string `json:"outcomePrices"` // JSON string: "[\"0.75\", \"0.25\"]"
-	ClobTokenIds  string `json:"clobTokenIds"`  // JSON string: "[\"token1\", \"token2\"]"
+	ID            string  `json:"id"`
+	ConditionID   string  `json:"conditionId"`
+	Question      string  `json:"question"`
+	Outcomes      string  `json:"outcomes"`      // JSON string: "[\"Yes\", \"No\"]"
+	OutcomePrices string  `json:"outcomePrices"` // JSON string: "[\"0.75\", \"0.25\"]"
+	ClobTokenIds  string  `json:"clobTokenIds"`  // JSON string: "[\"token1\", \"token2\"]"
+	Volume        string  `json:"volume"`        // Total volume (string in API)
+	Volume1wk     float64 `json:"volume1wk"`     // 1-week volume (number in API)
+	Volume1mo     float64 `json:"volume1mo"`     // 1-month volume (number in API)
 }
 
 // ClientConfig holds optional configuration for the Polymarket client
@@ -249,6 +252,19 @@ func (c *Client) FetchEvents(ctx context.Context, categories []string, vol24hrMi
 				// This prevents data loss when events transition from single to multi-market
 				compositeID := pe.ID + ":" + market.ID
 
+				// Use market-level volume for scoring accuracy in multi-market events
+				// Markets have volume1wk/volume1mo but not volume24hr
+				// Estimate volume24hr proportionally based on market's share of event's weekly volume
+				marketVolume1wk := market.Volume1wk
+				marketVolume1mo := market.Volume1mo
+				marketVolume24hr := pe.Volume24hr // fallback to event-level
+
+				// Proportionally estimate 24hr volume from market's share of weekly volume
+				if pe.Volume1wk > 0 && marketVolume1wk > 0 {
+					marketShare := marketVolume1wk / pe.Volume1wk
+					marketVolume24hr = pe.Volume24hr * marketShare
+				}
+
 				event := models.Market{
 					ID:             compositeID,
 					EventID:        pe.ID,
@@ -261,9 +277,9 @@ func (c *Client) FetchEvents(ctx context.Context, categories []string, vol24hrMi
 					Subcategory:    pe.Subcategory,
 					YesProbability: yesProb,
 					NoProbability:  noProb,
-					Volume24hr:     pe.Volume24hr,
-					Volume1wk:      pe.Volume1wk,
-					Volume1mo:      pe.Volume1mo,
+					Volume24hr:     marketVolume24hr,
+					Volume1wk:      marketVolume1wk,
+					Volume1mo:      marketVolume1mo,
 					Liquidity:      pe.Liquidity,
 					Active:         pe.Active && !pe.Closed,
 					LastUpdated:    now,

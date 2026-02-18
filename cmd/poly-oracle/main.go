@@ -286,7 +286,7 @@ func runMonitoringCycle(
 	// minScore by window duration is incorrect and creates a near-zero bar at 15m.
 	minScore := cfg.Monitor.MinCompositeScore()
 	marketsMap := buildMarketsMap(allEvents)
-	topGroups := mon.ScoreAndRank(changes, marketsMap, minScore, cfg.Monitor.TopK, cfg.Polymarket.Volume24hrMin)
+	topGroups := mon.ScoreAndRank(changes, marketsMap, minScore, cfg.Monitor.TopK, cfg.Polymarket.Volume24hrMin, cfg.Monitor.MinAbsChange, cfg.Monitor.MinBaseProb)
 
 	// Suppress recently-sent markets (same direction, within cooldown window)
 	topGroups = mon.FilterRecentlySent(topGroups, detectionWindow)

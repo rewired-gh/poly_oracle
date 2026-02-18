@@ -48,6 +48,8 @@ type MonitorConfig struct {
 	TopK               int     `mapstructure:"top_k"`
 	Enabled            bool    `mapstructure:"enabled"`
 	DetectionIntervals int     `mapstructure:"detection_intervals"`
+	MinAbsChange       float64 `mapstructure:"min_abs_change"` // minimum absolute probability change (fraction, e.g. 0.03 = 3pp)
+	MinBaseProb        float64 `mapstructure:"min_base_prob"`  // minimum base probability (fraction, e.g. 0.05 = 5%)
 }
 
 // MinCompositeScore returns the minimum composite score floor derived from sensitivity.
@@ -121,6 +123,8 @@ func Load(path string) (*Config, error) {
 	_ = v.BindEnv("monitor.top_k", "POLY_ORACLE_MONITOR_TOP_K")
 	_ = v.BindEnv("monitor.enabled", "POLY_ORACLE_MONITOR_ENABLED")
 	_ = v.BindEnv("monitor.detection_intervals", "POLY_ORACLE_MONITOR_DETECTION_INTERVALS")
+	_ = v.BindEnv("monitor.min_abs_change", "POLY_ORACLE_MONITOR_MIN_ABS_CHANGE")
+	_ = v.BindEnv("monitor.min_base_prob", "POLY_ORACLE_MONITOR_MIN_BASE_PROB")
 
 	// Telegram
 	_ = v.BindEnv("telegram.bot_token", "POLY_ORACLE_TELEGRAM_BOT_TOKEN")
@@ -184,6 +188,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("monitor.top_k", 5)         // Top 5 events (digestible)
 	v.SetDefault("monitor.enabled", true)
 	v.SetDefault("monitor.detection_intervals", 4) // 4 poll intervals for TC window
+	v.SetDefault("monitor.min_abs_change", 0.03)   // 3pp minimum absolute change
+	v.SetDefault("monitor.min_base_prob", 0.05)    // 5% minimum base probability
 
 	// Telegram defaults
 	v.SetDefault("telegram.enabled", false)
@@ -243,6 +249,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Monitor.DetectionIntervals < 2 {
 		return fmt.Errorf("monitor.detection_intervals must be at least 2 (need ≥2 poll intervals for TC computation)")
+	}
+	if c.Monitor.MinAbsChange < 0.0 || c.Monitor.MinAbsChange > 1.0 {
+		return fmt.Errorf("monitor.min_abs_change must be between 0.0 and 1.0")
+	}
+	if c.Monitor.MinBaseProb < 0.0 || c.Monitor.MinBaseProb >= 0.5 {
+		return fmt.Errorf("monitor.min_base_prob must be in [0.0, 0.5)")
 	}
 
 	// Validate Telegram config

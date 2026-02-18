@@ -30,9 +30,9 @@ type Market struct {
 	Subcategory    string    `json:"subcategory,omitempty"`
 	YesProbability float64   `json:"yes_probability"` // Current Yes probability (0–1)
 	NoProbability  float64   `json:"no_probability"`  // Current No probability (0–1)
-	Volume24hr     float64   `json:"volume_24hr"`     // 24-hour volume in USD (event-level)
-	Volume1wk      float64   `json:"volume_1wk"`      // 1-week volume in USD (event-level)
-	Volume1mo      float64   `json:"volume_1mo"`      // 1-month volume in USD (event-level)
+	Volume24hr     float64   `json:"volume_24hr"`     // Estimated 24-hour volume in USD (proportionally allocated from event)
+	Volume1wk      float64   `json:"volume_1wk"`      // 1-week volume in USD (market-level from API)
+	Volume1mo      float64   `json:"volume_1mo"`      // 1-month volume in USD (market-level from API)
 	Liquidity      float64   `json:"liquidity"`       // Current liquidity in USD (event-level)
 	Active         bool      `json:"active"`
 	Closed         bool      `json:"closed"`

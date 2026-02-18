@@ -23,17 +23,8 @@ monitor:
   #   0.3 → minScore=0.0045  — very permissive; expect 5+ alerts per cycle
   #   0.4 → minScore=0.008   — catches 5%+ moves on mid-volume markets; ~2-4 alerts/cycle (recommended)
   #   0.5 → minScore=0.0125  — stricter; only strong moves on high-volume markets pass
-  #   0.7 → minScore=0.0245  — filters tail-probability noise (KL amplifies <5% base prob moves)
+  #   0.7 → minScore=0.0245  — additional bar for any moves not caught by min_abs_change/min_base_prob
   #
-  # Note: early in a run (< detection_intervals cycles), SNR/TC both fall back to 1.0
-  # because there are too few snapshots for Bessel-corrected std dev. During bootstrap,
-  # score = KL × VolumeWeight only — KL is disproportionately large for low-probability
-  # markets (e.g. 0.9%→0.5% scores similar to 40%→30%), so high-volume geopolitics
-  # markets with tiny tail moves can slip through at sensitivity ≤ 0.5.
-  # Use 0.7 to suppress this bootstrap noise.
-  #
-  # Example: a 7% drop on a $500K market with stable history scores ≈ 0.22 (passes at 0.7)
-  # Example: a 1.1% drop on a $1M geopolitics market scores ≈ 0.016 (filtered at 0.7)
   sensitivity: 0.7
   top_k: 10
 
@@ -41,6 +32,25 @@ monitor:
   # Effective window = (detection_intervals + 1) × poll_interval.
   # At 5m polling: 4 → effective 25m window (5 snapshots → 4 pairs for TC discrimination)
   detection_intervals: 4
+
+  # Pre-score hard filters applied before KL/SNR scoring.
+  # These address two failure modes in the composite score:
+  #   1. KL divergence is inflated for low absolute changes at any probability regime.
+  #      e.g. 0.1%→0.9% produces KL ≈ 0.012 (similar to a 20%→30% move),
+  #      and 66.5%→68.5% (2pp) passes on high-volume markets even at sensitivity=0.7.
+  #   2. Tail-probability markets (< 5%) have near-zero historical σ, so SNR clamps
+  #      to 5.0 and amplifies the already-inflated KL to easily pass any sensitivity.
+  #
+  # min_abs_change: minimum absolute probability change required (fraction, e.g. 0.03 = 3pp).
+  # Filters: Juan Branco 1.2%→2.6% (1.3pp), US-Iran specific dates (0.6–0.9pp),
+  #          Threads 0.1%→0.9% (0.8pp), US-Iran by-date 2pp moves.
+  # Keeps: Pizza Hut 29.5%→21.0% (8.5pp), SHEIN 7pp, Grok 9.4pp.
+  min_abs_change: 0.03
+
+  # min_base_prob: minimum base (old) probability (fraction, e.g. 0.05 = 5%).
+  # Filters: Juan Branco (base=1.2%), US-Iran specific dates (base=0.9–1.6%),
+  #          Threads (base=0.1%) even when abs change somehow clears min_abs_change.
+  min_base_prob: 0.05
 
 telegram:
   bot_token: "YOUR_BOT_TOKEN"

@@ -578,8 +578,8 @@ func TestScoring(t *testing.T) {
 			buildChange("evt-c", 0.60, 0.75, time.Hour),
 		}
 
-		result1 := mon.ScoreAndRank(changes, markets, 0.0, 10, 25000.0)
-		result2 := mon.ScoreAndRank(changes, markets, 0.0, 10, 25000.0)
+		result1 := mon.ScoreAndRank(changes, markets, 0.0, 10, 25000.0, 0.0, 0.0)
+		result2 := mon.ScoreAndRank(changes, markets, 0.0, 10, 25000.0, 0.0, 0.0)
 
 		if len(result1) != len(result2) {
 			t.Fatalf("Determinism: different lengths %d vs %d", len(result1), len(result2))
@@ -611,7 +611,7 @@ func TestScoreAndRank_TopKLimit(t *testing.T) {
 		{ID: "c3", EventID: "e3", OldProbability: 0.50, NewProbability: 0.60, Magnitude: 0.10, Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now()},
 	}
 
-	top := mon.ScoreAndRank(changes, markets, 0.0, 2, 25000.0)
+	top := mon.ScoreAndRank(changes, markets, 0.0, 2, 25000.0, 0.0, 0.0)
 	if len(top) != 2 {
 		t.Errorf("Expected 2 results (k=2), got %d", len(top))
 	}
@@ -621,7 +621,7 @@ func TestScoreAndRank_NeverNil(t *testing.T) {
 	store := storage.New(100, 50, "/tmp/test-rank-nil.json", 0644, 0755)
 	mon := New(store)
 
-	result := mon.ScoreAndRank(nil, map[string]*models.Market{}, 0.0, 5, 25000.0)
+	result := mon.ScoreAndRank(nil, map[string]*models.Market{}, 0.0, 5, 25000.0, 0.0, 0.0)
 	if result == nil {
 		t.Error("ScoreAndRank should never return nil, got nil")
 	}
@@ -639,7 +639,7 @@ func TestScoreAndRank_MinScoreFilters(t *testing.T) {
 	}
 
 	// With very high minScore, nothing should pass
-	result := mon.ScoreAndRank(changes, markets, 999.0, 5, 25000.0)
+	result := mon.ScoreAndRank(changes, markets, 999.0, 5, 25000.0, 0.0, 0.0)
 	if len(result) != 0 {
 		t.Errorf("Expected 0 results with minScore=999, got %d", len(result))
 	}
@@ -656,9 +656,55 @@ func TestScoreAndRank_TopKZero(t *testing.T) {
 		{ID: "c1", EventID: "e1", OldProbability: 0.50, NewProbability: 0.70, Magnitude: 0.20, Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now()},
 	}
 
-	result := mon.ScoreAndRank(changes, markets, 0.0, 0, 25000.0)
+	result := mon.ScoreAndRank(changes, markets, 0.0, 0, 25000.0, 0.0, 0.0)
 	if len(result) != 0 {
 		t.Errorf("Expected 0 results when k=0, got %d", len(result))
+	}
+}
+
+func TestScoreAndRank_PreScoreFilters(t *testing.T) {
+	store := storage.New(100, 50, "/tmp/test-prescore-filters.json", 0644, 0755)
+	mon := New(store)
+
+	markets := map[string]*models.Market{
+		"tail-low-abs":  {ID: "tail-low-abs", EventID: "tail-low-abs", Volume24hr: 1_000_000, Title: "Tail low abs", Category: "geopolitics"},
+		"tail-pass":     {ID: "tail-pass", EventID: "tail-pass", Volume24hr: 1_000_000, Title: "Tail pass", Category: "geopolitics"},
+		"low-base-prob": {ID: "low-base-prob", EventID: "low-base-prob", Volume24hr: 1_000_000, Title: "Low base prob", Category: "geopolitics"},
+		"passes":        {ID: "passes", EventID: "passes", Volume24hr: 500_000, Title: "Passes", Category: "geopolitics"},
+	}
+
+	changes := []models.Change{
+		// Filtered by min_abs_change (0.8pp < 3pp), even though KL would be inflated at low base prob
+		{ID: "c1", EventID: "tail-low-abs", OldProbability: 0.001, NewProbability: 0.009, Magnitude: 0.008, Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now()},
+		// Also filtered by min_abs_change (2pp < 3pp) — the Iran 66%→68% case
+		{ID: "c2", EventID: "tail-pass", OldProbability: 0.665, NewProbability: 0.685, Magnitude: 0.020, Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now()},
+		// Filtered by min_base_prob (1.2% < 5%) — the Juan Branco case
+		{ID: "c3", EventID: "low-base-prob", OldProbability: 0.012, NewProbability: 0.046, Magnitude: 0.034, Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now()},
+		// Passes both filters: 8.5pp move at 29.5% base — the Pizza Hut case
+		{ID: "c4", EventID: "passes", OldProbability: 0.295, NewProbability: 0.210, Magnitude: 0.085, Direction: "decrease", TimeWindow: time.Hour, DetectedAt: time.Now()},
+	}
+
+	const minAbsChange = 0.03 // 3pp
+	const minBaseProb = 0.05  // 5%
+
+	result := mon.ScoreAndRank(changes, markets, 0.0, 10, 25000.0, minAbsChange, minBaseProb)
+
+	passedIDs := make(map[string]bool)
+	for _, g := range result {
+		passedIDs[g.ID] = true
+	}
+
+	if passedIDs["tail-low-abs"] {
+		t.Error("PreScoreFilters: tail-low-abs (0.8pp move) should be filtered by min_abs_change")
+	}
+	if passedIDs["tail-pass"] {
+		t.Error("PreScoreFilters: tail-pass (2pp move) should be filtered by min_abs_change")
+	}
+	if passedIDs["low-base-prob"] {
+		t.Error("PreScoreFilters: low-base-prob (1.2% base) should be filtered by min_base_prob")
+	}
+	if !passedIDs["passes"] {
+		t.Error("PreScoreFilters: passes (8.5pp move at 29.5% base) should clear both filters")
 	}
 }
 
@@ -918,7 +964,7 @@ func TestScenario_NoisySignalImportantEventFiltered(t *testing.T) {
 		cleanMarketID:  cleanMkt,
 	}
 
-	results := mon.ScoreAndRank(changes, marketsMap, minScore, 5, vRef)
+	results := mon.ScoreAndRank(changes, marketsMap, minScore, 5, vRef, 0.0, 0.0)
 
 	cleanPassed := false
 	for _, r := range results {
@@ -1032,7 +1078,7 @@ func TestScenario_SignificantSignalUnimportantEventFiltered(t *testing.T) {
 		highVolID: highVolMkt,
 	}
 
-	results := mon.ScoreAndRank(changes, marketsMap, minScore, 5, vRef)
+	results := mon.ScoreAndRank(changes, marketsMap, minScore, 5, vRef, 0.0, 0.0)
 
 	highVolPassed := false
 	for _, r := range results {
@@ -1095,7 +1141,7 @@ func TestScoreAndRank_GroupsByOriginalEventID(t *testing.T) {
 		{ID: "c3", EventID: "eth:flip", OriginalEventID: "eth", OldProbability: 0.40, NewProbability: 0.60, Magnitude: 0.20, Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now()},
 	}
 
-	groups := mon.ScoreAndRank(changes, markets, 0.0, 10, 25000.0)
+	groups := mon.ScoreAndRank(changes, markets, 0.0, 10, 25000.0, 0.0, 0.0)
 
 	if len(groups) != 2 {
 		t.Errorf("Expected 2 groups (btc, eth), got %d", len(groups))
@@ -1136,7 +1182,7 @@ func TestScoreAndRank_TopKAtGroupLevel(t *testing.T) {
 		{ID: "c4", EventID: "btc", OriginalEventID: "btc", OldProbability: 0.50, NewProbability: 0.55, Magnitude: 0.05, Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now()},
 	}
 
-	groups := mon.ScoreAndRank(changes, markets, 0.0, 2, 25000.0)
+	groups := mon.ScoreAndRank(changes, markets, 0.0, 2, 25000.0, 0.0, 0.0)
 	if len(groups) != 2 {
 		t.Errorf("Expected 2 groups (k=2), got %d", len(groups))
 	}

@@ -40,6 +40,21 @@ monitor:
   # At 15m polling: 4 → effective 75m window (catches sub-hour trends with good TC discrimination)
   detection_intervals: 4
 
+  # Pre-score hard filters applied before KL/SNR scoring.
+  # These address two root-cause failure modes:
+  #   1. KL divergence inflates for small absolute moves (especially at tail probabilities).
+  #      e.g. 0.1%→0.9% scores like a 20%→30% move due to ln(p_new/p_old) blow-up.
+  #   2. Tail-probability markets have near-zero historical σ, so SNR clamps to 5.0
+  #      and amplifies the inflated KL to easily pass any sensitivity threshold.
+  #
+  # min_abs_change: minimum absolute probability change required (fraction, e.g. 0.03 = 3pp).
+  # A 2pp move on a $1M geopolitics market passes sensitivity=0.5; this filter stops it.
+  min_abs_change: 0.03
+
+  # min_base_prob: minimum base (old) probability (fraction, e.g. 0.05 = 5%).
+  # Markets below 5% probability are in the tail zone where KL is structurally unreliable.
+  min_base_prob: 0.05
+
 telegram:
   bot_token: "YOUR_BOT_TOKEN"   # Get from @BotFather
   chat_id: "YOUR_CHAT_ID"       # Get from @userinfobot

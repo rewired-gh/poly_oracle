@@ -280,12 +280,19 @@ func groupByEvent(changes []models.Change) []models.Event {
 // slice when nothing clears the quality bar.
 // vRef is the reference volume for log-volume weighting (typically volume_24hr_min
 // from config); markets at this volume receive weight ≈ 1.0.
+// minAbsChange is the minimum absolute probability change (fraction); changes below
+// this are discarded before scoring regardless of KL or volume.
+// minBaseProb is the minimum base (old) probability; markets below this are in
+// the tail-probability zone where KL divergence is unreliable.
+// Pass 0.0 for either filter to disable it.
 func (m *Monitor) ScoreAndRank(
 	changes []models.Change,
 	markets map[string]*models.Market,
 	minScore float64,
 	k int,
 	vRef float64,
+	minAbsChange float64,
+	minBaseProb float64,
 ) []models.Event {
 	if vRef <= 0 {
 		vRef = 25000.0
@@ -294,6 +301,22 @@ func (m *Monitor) ScoreAndRank(
 	var candidates []models.Change
 
 	for _, change := range changes {
+		// Pre-score filter 1: minimum absolute probability change.
+		// KL divergence can be inflated for small absolute moves (especially at
+		// tail probabilities where log-ratios are large). Discard changes that
+		// are not economically meaningful regardless of KL or volume.
+		if minAbsChange > 0 && change.Magnitude < minAbsChange {
+			continue
+		}
+
+		// Pre-score filter 2: minimum base probability.
+		// Tail-probability markets (< 5%) have unreliable KL because p_new/p_old
+		// ratios blow up for tiny absolute moves. Also, stable tail markets have
+		// near-zero historical σ, so SNR clamps to 5.0 and amplifies the inflated KL.
+		if minBaseProb > 0 && change.OldProbability < minBaseProb {
+			continue
+		}
+
 		market, ok := markets[change.EventID]
 		if !ok {
 			logger.Warn("ScoreAndRank: market %s not found in map, skipping", change.EventID)
