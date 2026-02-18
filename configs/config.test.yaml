@@ -1,58 +1,67 @@
 # Poly Oracle Test Configuration
-# Sensitive configuration for end-to-end testing
-#
-# This configuration is optimized for testing - it will generate
-# notifications frequently to verify the system works end-to-end.
-#
-# DO NOT use for production - too sensitive, will generate noise.
-# Based on analysis: monitors ~80-100 events, expects 8-15 alerts/hour
+# 15-minute polling for testing, targeting 0-3 events per cycle.
+# Single interval (poll_interval) drives: polling, detection window, persistence.
 
-# Polymarket API configuration
 polymarket:
-  gamma_api_url: "https://gamma-api.polymarket.com"
-  clob_api_url: "https://clob.polymarket.com"
-  poll_interval: 15m                                 # Poll every 15 minutes (matches production)
-  categories:                                        # Test with all relevant categories
+  poll_interval: 5m
+  limit: 5000
+  categories:
     - geopolitics
     - tech
     - finance
     - world
-  # Low volume thresholds for testing - captures more events
-  volume_24hr_min: 1000.0       # $1K minimum
-  volume_1wk_min: 5000.0        # $5K weekly
-  volume_1mo_min: 10000.0       # $10K monthly
-  volume_filter_or: true        # OR logic (union)
-  limit: 1000                   # Fetch many events
-  timeout: 30s
+  # Volume filters (OR logic): pre-filter events before scoring
+  volume_24hr_min: 25000      # $25K minimum 24hr volume
+  volume_1wk_min: 100000      # $100K minimum weekly volume
+  volume_1mo_min: 250000      # $250K minimum monthly volume
 
-# Monitoring behavior configuration - very sensitive for testing
 monitor:
-  threshold: 0.04        # 2% change (very sensitive)
-  window: 15m            # 15-minute window (matches poll interval)
-  top_k: 5               # Show top 5 events for testing
+  # sensitivity controls the composite signal quality threshold (0.0=permissive, 1.0=strict)
+  # Formula: min_score = sensitivity² × 0.05  (window-agnostic — SNR handles scale)
+  #
+  # Calibration guide (5m polling, typical $25K–$1M volume events):
+  #   0.3 → minScore=0.0045  — very permissive; expect 5+ alerts per cycle
+  #   0.4 → minScore=0.008   — catches 5%+ moves on mid-volume markets; ~2-4 alerts/cycle (recommended)
+  #   0.5 → minScore=0.0125  — stricter; only strong moves on high-volume markets pass
+  #   0.7 → minScore=0.0245  — additional bar for any moves not caught by min_abs_change/min_base_prob
+  #
+  sensitivity: 0.4
+  top_k: 10
+
+  # detection_intervals: number of poll_interval periods in the detection window.
+  # Effective window = (detection_intervals + 1) × poll_interval.
+  # At 5m polling: 4 → effective 25m window (5 snapshots → 4 pairs for TC discrimination)
+  detection_intervals: 4
+
+  # Pre-score hard filters applied before KL/SNR scoring.
+  # These address two failure modes in the composite score:
+  #   1. KL divergence is inflated for low absolute changes at any probability regime.
+  #      e.g. 0.1%→0.9% produces KL ≈ 0.012 (similar to a 20%→30% move),
+  #      and 66.5%→68.5% (2pp) passes on high-volume markets even at sensitivity=0.7.
+  #   2. Tail-probability markets (< 5%) have near-zero historical σ, so SNR clamps
+  #      to 5.0 and amplifies the already-inflated KL to easily pass any sensitivity.
+  #
+  # min_abs_change: minimum absolute probability change required (fraction, e.g. 0.03 = 3pp).
+  # Filters: Juan Branco 1.2%→2.6% (1.3pp), US-Iran specific dates (0.6–0.9pp),
+  #          Threads 0.1%→0.9% (0.8pp), US-Iran by-date 2pp moves.
+  # Keeps: Pizza Hut 29.5%→21.0% (8.5pp), SHEIN 7pp, Grok 9.4pp.
+  min_abs_change: 0.05
+
+  # min_base_prob: minimum base (old) probability (fraction, e.g. 0.05 = 5%).
+  # Filters: Juan Branco (base=1.2%), US-Iran specific dates (base=0.9–1.6%),
+  #          Threads (base=0.1%) even when abs change somehow clears min_abs_change.
+  min_base_prob: 0.05
+
+telegram:
+  bot_token: "YOUR_BOT_TOKEN"
+  chat_id: "YOUR_CHAT_ID"
   enabled: true
 
-# Telegram notification configuration
-telegram:
-  bot_token: "YOUR_BOT_TOKEN_HERE"  # Get from @BotFather on Telegram
-  chat_id: "YOUR_CHAT_ID_HERE"      # Get from @userinfobot on Telegram
-  enabled: true                     # Enable Telegram notifications
-
-# Storage and persistence configuration
 storage:
-  max_events: 1000000                       # Maximum events to track in memory
-  max_snapshots_per_event: 288              # 24 hours of 5-minute snapshots (288 = 24*12)
-  max_file_size_mb: 500                     # Maximum persistence file size in MB
-  persistence_interval: 15m                 # Save frequently for testing
-  file_path: ""                             # Empty = use OS tmp dir
-  data_dir: ""                              # Empty = use OS tmp dir
+  # Tuned for 4 GiB RAM / 128 GiB SSD
+  max_events: 10000                       # Track up to 10000 events
+  max_snapshots_per_event: 288            # 1 days of 5-min data for SNR
+  max_file_size_mb: 2048                  # Up to 2 GB persistence file
 
-# Logging configuration - debug level for testing
 logging:
-  level: "debug"    # Debug level for detailed testing output
-  format: "text"    # Text format for easier reading during tests
-
-# Environment variables can override any value:
-# POLY_ORACLE_TELEGRAM_BOT_TOKEN=your_token
-# POLY_ORACLE_TELEGRAM_CHAT_ID=your_chat_id
-# POLY_ORACLE_MONITOR_THRESHOLD=0.01
+  level: debug    # Verbose for test observation

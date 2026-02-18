@@ -1,78 +1,70 @@
-# Poly Oracle Configuration Example
-# Copy this file to config.yaml and adjust values as needed
+# Poly Oracle Configuration
+# Copy to config.yaml and set your Telegram credentials
 #
-# This configuration is optimized for daily use - it extracts high-value signals
-# from Polymarket while avoiding notification flood. The defaults focus on:
-# - Significant events with real market activity (volume filtering)
-# - Meaningful probability changes (not minor fluctuations)
-# - Digestible notifications (2-5 key events per cycle)
-#
-# Based on real Polymarket API analysis (see docs/configuration-experiment-results.md):
-# - 228 total events in geopolitics/tech/finance/crypto/world categories
-# - Volume thresholds select top 15-20% highest quality events
-# - Expected 2-4 alerts per hour with 4% threshold
-# - Categories include crypto/world for broader coverage (overlap with tech/finance)
+# Single interval (poll_interval) drives: polling, detection window, persistence.
+# Expected: 2-5 high-quality alerts per cycle based on sensitivity.
 
-# Polymarket API configuration
 polymarket:
-  gamma_api_url: "https://gamma-api.polymarket.com"
-  clob_api_url: "https://clob.polymarket.com"
-  poll_interval: 1h                                  # Poll every hour (matches notification rhythm)
-  categories:                                        # High-value categories for insights
+  poll_interval: 15m
+  limit: 5000
+  categories:
     - geopolitics
     - tech
     - finance
-    - world                                          # Global events, elections
-  # Volume filtering (logical OR): Include event if ANY volume threshold is met
-  # Optimized for these categories based on analysis of 228 events
-  # Selects top ~30-40 events with highest market activity
-  volume_24hr_min: 25000.0      # $25K minimum 24hr volume
-  volume_1wk_min: 100000.0      # $100K minimum weekly volume
-  volume_1mo_min: 250000.0      # $250K minimum monthly volume
-  volume_filter_or: true        # true = OR (union), false = AND (intersection)
-  limit: 200                    # Fetch enough events to find quality signals
-  timeout: 30s                  # API request timeout
-  max_retries: 3                # Number of retry attempts on API failure
-  retry_delay_base: 1s          # Base delay between retries (multiplied by attempt number)
-  max_idle_conns: 100           # Maximum idle HTTP connections in pool
-  max_idle_conns_per_host: 10   # Maximum idle connections per host
-  idle_conn_timeout: 90s        # Timeout for idle connections
+    - world
+  # Volume filters (OR logic): pre-filter events before scoring
+  volume_24hr_min: 25000      # $25K minimum 24hr volume
+  volume_1wk_min: 100000      # $100K minimum weekly volume
+  volume_1mo_min: 250000      # $250K minimum monthly volume
 
-# Monitoring behavior configuration
 monitor:
-  threshold: 0.04        # 4% change threshold (meaningful movements)
-  window: 1h             # 1-hour time window (matches poll interval)
-  top_k: 5               # Top 5 events per notification (digestible amount)
-  enabled: true          # Enable monitoring
+  # sensitivity controls the composite signal quality threshold (0.0=permissive, 1.0=strict)
+  # Formula: min_score = sensitivity² × 0.05  (window-agnostic — SNR handles scale)
+  #
+  # Calibration guide (15m polling, typical $25K–$1M volume events):
+  #   0.3 → minScore=0.0045  — catches 3%+ moves on mid-volume markets; noisy
+  #   0.5 → minScore=0.0125  — catches meaningful 5%+ moves; ~2-3 alerts/cycle (recommended)
+  #   0.7 → minScore=0.0245  — strict; only large moves on high-volume markets pass
+  #
+  # Example: a 9% drop at 91%→82% certainty on a $200K market scores ≈ 0.73 (passes at 0.5)
+  # Example: a 0.6% move at near-certainty on a $50K market scores ≈ 0.0005 (filtered at 0.5)
+  sensitivity: 0.5
+  top_k: 10
 
-# Telegram notification configuration
+  # detection_intervals: how many poll_interval periods form the detection window.
+  # Effective window = (detection_intervals + 1) × poll_interval.
+  # The +1 absorbs per-cycle processing latency so boundary snapshots are never excluded.
+  # Minimum 2 (required for trajectory_consistency to have data).
+  # Higher values: smoother TC signal, detects slower trends, may repeat notifications.
+  # Lower values: more reactive, TC less discriminating.
+  # At 15m polling: 4 → effective 75m window (catches sub-hour trends with good TC discrimination)
+  detection_intervals: 4
+
+  # Pre-score hard filters applied before KL/SNR scoring.
+  # These address two root-cause failure modes:
+  #   1. KL divergence inflates for small absolute moves (especially at tail probabilities).
+  #      e.g. 0.1%→0.9% scores like a 20%→30% move due to ln(p_new/p_old) blow-up.
+  #   2. Tail-probability markets have near-zero historical σ, so SNR clamps to 5.0
+  #      and amplifies the inflated KL to easily pass any sensitivity threshold.
+  #
+  # min_abs_change: minimum absolute probability change required (fraction, e.g. 0.03 = 3pp).
+  # A 2pp move on a $1M geopolitics market passes sensitivity=0.5; this filter stops it.
+  min_abs_change: 0.03
+
+  # min_base_prob: minimum base (old) probability (fraction, e.g. 0.05 = 5%).
+  # Markets below 5% probability are in the tail zone where KL is structurally unreliable.
+  min_base_prob: 0.05
+
 telegram:
-  bot_token: "YOUR_BOT_TOKEN_HERE"  # Get from @BotFather on Telegram
-  chat_id: "YOUR_CHAT_ID_HERE"      # Get from @userinfobot on Telegram
-  enabled: true                     # Enable Telegram notifications
-  max_retries: 3                    # Number of retry attempts for sending messages
-  retry_delay_base: 1s              # Base delay between retries
+  bot_token: "YOUR_BOT_TOKEN"   # Get from @BotFather
+  chat_id: "YOUR_CHAT_ID"       # Get from @userinfobot
+  enabled: true
 
-# Storage and persistence configuration
 storage:
-  max_events: 1000                          # Maximum events to track in memory
-  max_snapshots_per_event: 24               # 24 hours of hourly snapshots
-  max_file_size_mb: 100                     # Maximum persistence file size in MB
-  persistence_interval: 1h                  # Save to disk every hour (matches poll interval)
-  persistence_retries: 3                    # Retry attempts for Save() failures
-  persistence_retry_delay: 5s              # Base delay between persistence retries
-  file_permissions: 0600                    # Owner-only file permissions (recommended for security)
-  dir_permissions: 0700                     # Owner-only directory permissions (recommended for security)
-  file_path: ""                             # Empty = use OS tmp dir (/tmp/poly-oracle/data.json on macOS/Linux)
-  data_dir: ""                              # Empty = use OS tmp dir
+  # Tuned for 4 GiB RAM / 128 GiB SSD
+  max_events: 10000                       # Track up to 10000 events
+  max_snapshots_per_event: 672            # 7 days of 15-min snapshots for SNR
+  max_file_size_mb: 2048                  # Up to 2 GB persistence file
 
-# Logging configuration
 logging:
-  level: "info"    # Log level: debug, info, warn, error
-  format: "json"   # Log format: json, text
-
-# Environment variables can override any value:
-# POLY_ORACLE_TELEGRAM_BOT_TOKEN=your_token
-# POLY_ORACLE_TELEGRAM_CHAT_ID=your_chat_id
-# POLY_ORACLE_MONITOR_THRESHOLD=0.05
-# POLY_ORACLE_POLYMARKET_POLL_INTERVAL=1h
+  level: info    # debug, info, warn, error

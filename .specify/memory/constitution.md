@@ -1,155 +1,133 @@
 <!--
 Sync Impact Report - Constitution Update
 ==========================================
-Version change: N/A → 1.0.0
-Modified principles: Initial creation
+Version change: 1.0.0 → 2.0.0
+Bump rationale: MAJOR — all five principles redefined; Technology Stack section replaced with
+Development Standards; testing philosophy shifted from coverage targets to behavior-first.
+
+Modified principles:
+  - I. Simplicity and Maintainability → I. Simplicity Is Non-Negotiable (tightened, YAGNI made explicit)
+  - II. Go Language → II. Idiomatic Go (renamed, stdlib-first rule added)
+  - III. Latest and Robust Dependencies → IV. Minimal Dependencies (reordered, "earn its place" framing)
+  - IV. Comprehensive Unit Testing → V. Pragmatic Testing (philosophy changed: behavior > coverage targets)
+  - V. Code Quality and Taste → dissolved into Principles I, II, and Development Standards
+
 Added sections:
-  - Core Principles (5 principles)
-  - Technology Stack
-  - Development Workflow
-  - Governance
-Removed sections: None
+  - Development Standards (replaces Technology Stack; absorbs formatting, naming, comment rules)
+
+Removed sections:
+  - Technology Stack (content folded into principles and Development Standards)
+
 Templates requiring updates:
-  ✅ .specify/templates/plan-template.md (reviewed - compatible)
-  ✅ .specify/templates/spec-template.md (reviewed - compatible)
-  ✅ .specify/templates/tasks-template.md (reviewed - compatible)
-Follow-up TODOs: None
+  ✅ .specify/templates/plan-template.md — "Constitution Check" section compatible; no update needed
+  ✅ .specify/templates/spec-template.md — compatible; no update needed
+  ✅ .specify/templates/tasks-template.md — compatible; no update needed
+
+Follow-up TODOs: None — all placeholders resolved.
 -->
 
 # Poly Oracle Constitution
 
 ## Core Principles
 
-### I. Simplicity and Maintainability
+### I. Simplicity Is Non-Negotiable
 
-Code MUST be simple, readable, and maintainable. Every design decision MUST prioritize clarity over cleverness.
-
-**Rules:**
-- Favor explicit over implicit implementations
-- Avoid premature abstraction - prefer duplication when the abstraction isn't clear
-- Each function and module MUST have a single, clear responsibility
-- Code MUST be self-documenting through clear naming and structure
-- Comments MUST explain "why", not "what"
-
-**Rationale:** Simple code is easier to understand, debug, and modify. Maintainability directly impacts long-term project velocity and reduces technical debt.
-
-### II. Go Language
-
-All production code MUST be written in idiomatic Go, following the official Go style guidelines and best practices.
+The simplest correct solution MUST always be chosen. Complexity requires explicit written justification.
 
 **Rules:**
-- Use the latest stable Go version unless project constraints require otherwise
-- Follow Effective Go guidelines and Go Code Review Comments
-- Use standard library preferentially; external dependencies require justification
-- Leverage Go's concurrency primitives (goroutines, channels) appropriately
-- Ensure all code passes `go vet` and `golint` without warnings
+- Solve the problem in front of you. Do not solve the problem you imagine coming next.
+- Three similar lines of code beat a premature abstraction. Extract only when duplication causes bugs.
+- If you cannot explain why an abstraction exists in one sentence, delete it.
+- Functions MUST do one thing. If naming is hard, the scope is wrong.
+- No design patterns for their own sake. No frameworks for problems that do not yet exist.
 
-**Rationale:** Go provides simplicity, performance, and strong tooling. Idiomatic Go ensures consistency across the codebase and leverages the language's strengths.
+**Rationale:** Every layer of abstraction is a debt. Abstractions that do not pay off compound into
+systems no one can change safely.
 
-### III. Latest and Robust Dependencies
+### II. Idiomatic Go
 
-External dependencies MUST be carefully evaluated, actively maintained, and minimal in number.
-
-**Rules:**
-- Dependencies MUST use semantic versioning with pinned versions in go.mod
-- Evaluate dependencies for: maintenance activity, community adoption, security history, and API stability
-- Avoid dependencies that duplicate standard library functionality
-- Document the rationale for each major dependency in project documentation
-- Regularly update dependencies to incorporate security patches
-- Prefer well-established libraries over experimental ones
-
-**Rationale:** External dependencies introduce risk and maintenance burden. Careful selection and minimal dependencies reduce attack surface and dependency management overhead.
-
-### IV. Comprehensive Unit Testing
-
-All packages MUST have reasonable unit test coverage with meaningful test cases.
+All code MUST be idiomatic Go. The standard library is the first and preferred solution.
 
 **Rules:**
-- Write unit tests for all exported functions and types
-- Test coverage MUST include happy paths, edge cases, and error conditions
-- Use table-driven tests for scenarios with multiple inputs/outputs
-- Tests MUST be independent and idempotent - no shared state between tests
-- Aim for high coverage of critical business logic; coverage targets should be pragmatic
-- Use `go test` with benchmarking where performance is critical
-- Integration and end-to-end tests complement but do not replace unit tests
+- Reach for `stdlib` before any third-party package. A dependency needs a written justification.
+- Follow Go proverbs: errors are values, accept interfaces return structs, make the zero value useful.
+- Concurrency MUST be explicit — goroutines and channels, not hidden behind opaque abstractions.
+- All code MUST pass `go vet` and `gofmt` unmodified before commit.
+- Generics are permitted only when the concrete, measurable benefit is obvious.
 
-**Rationale:** Unit tests catch bugs early, document expected behavior, and enable confident refactoring. Reasonable coverage balances quality assurance with development velocity.
+**Rationale:** Idiomatic Go is the language's core strength. Fighting its idioms creates friction;
+working with them produces clarity.
 
-### V. Code Quality and Taste
+### III. Explicit Error Handling
 
-Code MUST demonstrate good taste through clarity, consistency, and attention to detail.
+Errors MUST be handled explicitly at every call boundary.
 
 **Rules:**
-- Follow consistent formatting enforced by `gofmt` and project linting rules
-- Use meaningful names that convey intent - avoid abbreviations and single-letter variables except in obvious contexts
-- Functions should be small and focused - if it needs a comment to explain what it does, it should be refactored
-- Handle errors explicitly - never ignore errors, always propagate or handle appropriately
-- Review code with fresh eyes - if it's hard to understand, rewrite it
-- Eliminate dead code, commented-out code, and unnecessary complexity
-- Apply the "leave the code better than you found it" principle
+- Never discard an error with `_` unless a comment explains precisely why it is safe.
+- Wrap errors with context (`fmt.Errorf("doing X: %w", err)`); never swallow them silently.
+- Panics are reserved for programmer-error invariant violations, never for user or external system errors.
+- No error type hierarchies unless the caller genuinely needs to distinguish between error cases.
 
-**Rationale:** Good code taste is the discipline of writing code that others (and future you) can understand and maintain. It reduces cognitive load and prevents bugs.
+**Rationale:** Silent errors become production mysteries. Explicit handling makes every failure mode
+visible and debuggable without a debugger.
 
-## Technology Stack
+### IV. Minimal Dependencies
 
-**Language:** Go (latest stable version)
+Each external dependency MUST earn its place.
 
-**Dependency Management:** Go modules with vendoring for reproducible builds
+**Rules:**
+- Before adding a dependency, verify `stdlib` cannot solve the problem adequately.
+- Dependencies MUST be pinned in `go.mod` and come from actively maintained projects.
+- Prefer single-purpose, narrowly scoped libraries over large frameworks.
+- The reason for each non-stdlib dependency MUST be documented near its usage or in package docs.
 
-**Testing Framework:** Standard `testing` package with testify for assertions (if needed)
+**Rationale:** Every dependency is a liability — build time, security surface, upgrade burden. Fewer
+dependencies mean a system easier to audit, update, and understand.
 
-**Linting:** golangci-lint with project-specific configuration
+### V. Pragmatic Testing
 
-**Documentation:** Go doc comments and project-level documentation in docs/
+Test critical behavior, not implementation details.
 
-**Build Tools:** Standard Go toolchain with Make for build automation
+**Rules:**
+- Use table-driven tests for any logic with multiple input/output pairs.
+- Tests MUST verify behavior (what the code does), not implementation (how it does it).
+- Mock only external I/O boundaries: HTTP clients, filesystem, time, external APIs.
+  Never mock internal collaborators.
+- A test harder to maintain than the code it covers is a bad test — simplify or delete it.
+- No coverage percentage targets. Cover what can realistically break in production.
 
-## Development Workflow
+**Rationale:** Tests that verify behavior survive refactoring. Tests that verify implementation
+actively block it.
 
-### Code Review Requirements
+## Development Standards
 
-- All code changes MUST be reviewed before merging
-- Reviewers MUST verify constitution compliance
-- PRs MUST pass all automated tests and linting checks
-- PRs MUST include tests for new functionality
+**Formatting:** `gofmt` is mandatory. No custom formatters, no exceptions.
 
-### Testing Gates
+**Linting:** `golangci-lint` with the project config. Fix warnings — do not suppress them without
+a comment explaining why the suppression is correct.
 
-- All unit tests MUST pass before merge
-- `go vet` and linting checks MUST pass
-- Critical paths should have integration tests where applicable
-- Performance benchmarks MUST not regress without documented justification
+**Naming:** Clear, complete names over short ones. `userID` not `uid`. Acronyms follow Go convention
+(`URL`, `ID`, `HTTP`). If naming is hard, the abstraction is wrong.
 
-### Commit Standards
+**Comments:** Comments explain *why*, not *what*. If code needs a comment to explain what it does,
+rewrite the code until it is self-evident.
 
-- Commits MUST be atomic and focused
-- Commit messages MUST clearly describe the change and motivation
-- Reference issues/PRs where applicable
-
-### Refactoring Guidelines
-
-- Refactoring MUST be done in separate commits from feature changes
-- Behavior-preserving refactorings MUST include test verification
-- Large refactorings require plan documentation
+**Dead code:** Remove it. Commented-out code MUST NOT be committed. Version control is the history.
 
 ## Governance
 
-This constitution establishes the non-negotiable principles for the Poly Oracle project. All decisions, code reviews, and architectural choices MUST align with these principles.
+Constitution compliance is verified at code review. Violations require explicit written justification
+committed alongside the code, not merely verbal approval.
 
-**Amendment Procedure:**
-- Amendments require documentation of the proposed change
-- Impact analysis on existing code and practices
-- Team discussion and consensus
-- Version increment following semantic versioning
+**Amendment procedure:** Increment the version, document the rationale, update dependent templates
+if affected. No unanimous consensus required — one maintainer with clear reasoning suffices.
 
-**Versioning Policy:**
-- MAJOR version: Backward incompatible principle removal or redefinition
-- MINOR version: New principle added or materially expanded guidance
-- PATCH version: Clarifications, typo fixes, non-semantic refinements
+**Versioning policy:**
+- MAJOR: Principle removal or incompatible redefinition of an existing principle.
+- MINOR: New principle added or existing principle materially expanded.
+- PATCH: Wording clarifications, typo fixes, non-semantic refinements.
 
-**Compliance Review:**
-- All PRs MUST explicitly verify constitution compliance
-- Complexity beyond these principles requires documented justification
-- Exceptions are temporary and MUST be tracked for resolution
+**Compliance review:** All PRs MUST explicitly verify that no principle is violated. Exceptions are
+temporary and MUST be tracked as TODOs with a deadline or linked issue.
 
-**Version**: 1.0.0 | **Ratified**: 2026-02-16 | **Last Amended**: 2026-02-16
+**Version**: 2.0.0 | **Ratified**: 2026-02-16 | **Last Amended**: 2026-02-17

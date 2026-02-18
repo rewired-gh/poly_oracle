@@ -9,6 +9,7 @@ package telegram
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -50,9 +51,9 @@ func NewClient(botToken, chatID string, maxRetries int, retryDelayBase time.Dura
 	}, nil
 }
 
-// Send sends a notification with the detected changes
-func (c *Client) Send(changes []models.Change) error {
-	message := c.formatMessage(changes)
+// Send sends a notification with the detected event groups
+func (c *Client) Send(groups []models.Event) error {
+	message := c.formatMessage(groups)
 
 	// Create message
 	msg := tgbotapi.NewMessage(c.chatID, message)
@@ -73,94 +74,79 @@ func (c *Client) Send(changes []models.Change) error {
 	return fmt.Errorf("failed to send message after %d retries: %w", c.maxRetries, lastErr)
 }
 
-// formatMessage formats changes into a Telegram message
-func (c *Client) formatMessage(changes []models.Change) string {
-	message := "🚨 *Top Probability Changes Detected*\n\n"
+// formatMessage formats event groups into a Telegram MarkdownV2 message.
+// Each group is one numbered entry; markets within the group appear as sub-bullets.
+func (c *Client) formatMessage(groups []models.Event) string {
+	message := "🚨 *Notable Odds Movements*\n\n"
 
-	// Show detected time once at the top
-	if len(changes) > 0 {
-		dateStr := escapeMarkdownV2(changes[0].DetectedAt.Format("2006-01-02 15:04:05"))
+	// Show detected time once at the top (from the first market of the first group)
+	if len(groups) > 0 && len(groups[0].Markets) > 0 {
+		dateStr := escapeMarkdownV2(groups[0].Markets[0].DetectedAt.Format("2006-01-02 15:04:05"))
 		message += fmt.Sprintf("📅 Detected: %s\n\n", dateStr)
 	}
 
-	for i, change := range changes {
-		// Add emoji for direction
-		directionEmoji := "📈"
-		if change.Direction == "decrease" {
-			directionEmoji = "📉"
-		}
-
-		// Format magnitude as percentage
-		magnitudePct := change.Magnitude * 100
-		oldPct := change.OldProbability * 100
-		newPct := change.NewProbability * 100
-
-		// Create clickable hyperlink for event title if URL is available
+	for i, group := range groups {
+		// Create clickable hyperlink for event title
 		var titleLink string
-		if change.EventURL != "" {
-			// MarkdownV2 hyperlink format: [text](url)
-			// Need to escape the title text but not the URL
-			escapedQuestion := escapeMarkdownV2(change.EventQuestion)
-			titleLink = fmt.Sprintf("[%s](%s)", escapedQuestion, change.EventURL)
+		if group.URL != "" {
+			escapedQuestion := escapeMarkdownV2(group.Title)
+			titleLink = fmt.Sprintf("[%s](%s)", escapedQuestion, group.URL)
 		} else {
-			// Fallback to plain text if no URL
-			escapedQuestion := escapeMarkdownV2(change.EventQuestion)
-			titleLink = escapedQuestion
+			titleLink = escapeMarkdownV2(group.Title)
 		}
-
-		// Format percentages with escaped periods
-		magnitudeStr := escapeMarkdownV2(fmt.Sprintf("%.1f%%", magnitudePct))
-		oldPctStr := escapeMarkdownV2(fmt.Sprintf("%.1f%%", oldPct))
-		newPctStr := escapeMarkdownV2(fmt.Sprintf("%.1f%%", newPct))
-		windowStr := escapeMarkdownV2(formatDuration(change.TimeWindow))
 
 		message += fmt.Sprintf("%d\\. %s\n", i+1, titleLink)
 
-		// Add market question if this is a multi-market event
-		if change.MarketQuestion != "" && change.MarketQuestion != change.EventQuestion {
-			escapedMarketQ := escapeMarkdownV2(change.MarketQuestion)
-			message += fmt.Sprintf("   🎯 Market: %s\n", escapedMarketQ)
+		for _, change := range group.Markets {
+			directionEmoji := "📈"
+			if change.Direction == "decrease" {
+				directionEmoji = "📉"
+			}
+
+			magnitudePct := change.Magnitude * 100
+			oldPct := change.OldProbability * 100
+			newPct := change.NewProbability * 100
+
+			magnitudeStr := escapeMarkdownV2(fmt.Sprintf("%.1f%%", magnitudePct))
+			oldPctStr := escapeMarkdownV2(fmt.Sprintf("%.1f%%", oldPct))
+			newPctStr := escapeMarkdownV2(fmt.Sprintf("%.1f%%", newPct))
+			windowStr := escapeMarkdownV2(formatDuration(change.TimeWindow))
+
+			// Show market question as sub-bullet when it differs from the event question
+			if change.MarketQuestion != "" && change.MarketQuestion != group.Title {
+				escapedMarketQ := escapeMarkdownV2(change.MarketQuestion)
+				message += fmt.Sprintf("   🎯 %s\n", escapedMarketQ)
+			}
+
+			message += fmt.Sprintf("   %s *%s* \\(%s → %s\\) ⏱ %s\n",
+				directionEmoji, magnitudeStr, oldPctStr, newPctStr, windowStr)
 		}
 
-		message += fmt.Sprintf("   %s Change: *%s* \\(%s → %s\\)\n",
-			directionEmoji, magnitudeStr, oldPctStr, newPctStr)
-		message += fmt.Sprintf("   ⏱ Window: %s\n\n", windowStr)
+		message += "\n"
 	}
 
 	return message
 }
 
-// escapeMarkdownV2 escapes special characters for Telegram MarkdownV2
+// escapeMarkdownV2 escapes special characters for Telegram MarkdownV2.
+// Characters that need escaping: _ * [ ] ( ) ~ ` > # + - = | { } . !
 func escapeMarkdownV2(text string) string {
-	// Characters that need escaping in MarkdownV2:
-	// _ * [ ] ( ) ~ ` > # + - = | { } . !
-	// Note: We escape all of them with \ prefix
-
-	result := ""
+	var b strings.Builder
+	b.Grow(len(text) + len(text)/4) // pre-allocate with room for escapes
 	for _, char := range text {
 		switch char {
 		case '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!':
-			result += "\\" + string(char)
-		default:
-			result += string(char)
+			b.WriteByte('\\')
 		}
+		b.WriteRune(char)
 	}
-	return result
+	return b.String()
 }
 
 // formatDuration formats a duration in a human-readable way
 func formatDuration(d time.Duration) string {
-	hours := int(d.Hours())
-	if hours == 1 {
+	if hours := int(d.Hours()); hours >= 1 {
 		return fmt.Sprintf("%dh", hours)
 	}
-	if hours > 1 {
-		return fmt.Sprintf("%dh", hours)
-	}
-
-	mins := int(d.Minutes())
-	if mins == 1 {
-		return fmt.Sprintf("%dm", mins)
-	}
-	return fmt.Sprintf("%dm", mins)
+	return fmt.Sprintf("%dm", int(d.Minutes()))
 }

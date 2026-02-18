@@ -1,5 +1,5 @@
 // Package storage provides thread-safe in-memory storage with file-based persistence.
-// It manages events, probability snapshots, and detected changes with automatic
+// It manages markets, probability snapshots, and detected changes with automatic
 // data rotation to prevent unbounded memory growth.
 //
 // Storage is designed for reliability with atomic file writes and graceful
@@ -22,13 +22,13 @@ import (
 
 // Storage provides thread-safe in-memory storage with file-based persistence
 type Storage struct {
-	events    map[string]*models.Event
+	markets   map[string]*models.Market
 	snapshots map[string][]models.Snapshot
 	changes   []models.Change
 	mu        sync.RWMutex
 
 	// Configuration
-	maxEvents            int
+	maxMarkets           int
 	maxSnapshotsPerEvent int
 	filePath             string
 	filePermissions      os.FileMode
@@ -39,23 +39,23 @@ type Storage struct {
 type PersistenceFile struct {
 	Version   string                       `json:"version"`
 	SavedAt   time.Time                    `json:"saved_at"`
-	Events    map[string]*models.Event     `json:"events"`
+	Markets   map[string]*models.Market    `json:"events"` // json tag kept as "events" for backwards compatibility
 	Snapshots map[string][]models.Snapshot `json:"snapshots"`
 }
 
 // New creates a new Storage instance with persistence to tmp directory
 // If filePath is empty, uses OS-appropriate tmp directory
-func New(maxEvents, maxSnapshotsPerEvent int, filePath string, filePermissions, dirPermissions os.FileMode) *Storage {
+func New(maxMarkets, maxSnapshotsPerEvent int, filePath string, filePermissions, dirPermissions os.FileMode) *Storage {
 	// Use OS-appropriate tmp directory if no path provided
 	if filePath == "" {
 		filePath = filepath.Join(os.TempDir(), "poly-oracle", "data.json")
 	}
 
 	return &Storage{
-		events:               make(map[string]*models.Event),
+		markets:              make(map[string]*models.Market),
 		snapshots:            make(map[string][]models.Snapshot),
 		changes:              make([]models.Change, 0),
-		maxEvents:            maxEvents,
+		maxMarkets:           maxMarkets,
 		maxSnapshotsPerEvent: maxSnapshotsPerEvent,
 		filePath:             filePath,
 		filePermissions:      filePermissions,
@@ -63,61 +63,61 @@ func New(maxEvents, maxSnapshotsPerEvent int, filePath string, filePermissions, 
 	}
 }
 
-// AddEvent adds or updates an event in storage
-func (s *Storage) AddEvent(event *models.Event) error {
-	if err := event.Validate(); err != nil {
-		return fmt.Errorf("invalid event: %w", err)
+// AddMarket adds a market to storage
+func (s *Storage) AddMarket(market *models.Market) error {
+	if err := market.Validate(); err != nil {
+		return fmt.Errorf("invalid market: %w", err)
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.events[event.ID] = event
+	s.markets[market.ID] = market
 	return nil
 }
 
-// GetEvent retrieves an event by ID
-func (s *Storage) GetEvent(id string) (*models.Event, error) {
+// GetMarket retrieves a market by ID
+func (s *Storage) GetMarket(id string) (*models.Market, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	event, exists := s.events[id]
+	market, exists := s.markets[id]
 	if !exists {
-		return nil, fmt.Errorf("event not found: %s", id)
+		return nil, fmt.Errorf("market not found: %s", id)
 	}
-	return event, nil
+	return market, nil
 }
 
-// GetAllEvents returns all events
-func (s *Storage) GetAllEvents() ([]*models.Event, error) {
+// GetAllMarkets returns all markets
+func (s *Storage) GetAllMarkets() ([]*models.Market, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	events := make([]*models.Event, 0, len(s.events))
-	for _, event := range s.events {
-		events = append(events, event)
+	markets := make([]*models.Market, 0, len(s.markets))
+	for _, market := range s.markets {
+		markets = append(markets, market)
 	}
-	return events, nil
+	return markets, nil
 }
 
-// UpdateEvent updates an existing event
-func (s *Storage) UpdateEvent(event *models.Event) error {
-	if err := event.Validate(); err != nil {
-		return fmt.Errorf("invalid event: %w", err)
+// UpdateMarket updates an existing market
+func (s *Storage) UpdateMarket(market *models.Market) error {
+	if err := market.Validate(); err != nil {
+		return fmt.Errorf("invalid market: %w", err)
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.events[event.ID]; !exists {
-		return fmt.Errorf("event not found: %s", event.ID)
+	if _, exists := s.markets[market.ID]; !exists {
+		return fmt.Errorf("market not found: %s", market.ID)
 	}
 
-	s.events[event.ID] = event
+	s.markets[market.ID] = market
 	return nil
 }
 
-// AddSnapshot adds a new snapshot for an event
+// AddSnapshot adds a new snapshot for a market
 func (s *Storage) AddSnapshot(snapshot *models.Snapshot) error {
 	if err := snapshot.Validate(); err != nil {
 		return fmt.Errorf("invalid snapshot: %w", err)
@@ -126,21 +126,21 @@ func (s *Storage) AddSnapshot(snapshot *models.Snapshot) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Verify event exists
-	if _, exists := s.events[snapshot.EventID]; !exists {
-		return fmt.Errorf("event not found: %s", snapshot.EventID)
+	// Verify market exists
+	if _, exists := s.markets[snapshot.EventID]; !exists {
+		return fmt.Errorf("market not found: %s", snapshot.EventID)
 	}
 
 	s.snapshots[snapshot.EventID] = append(s.snapshots[snapshot.EventID], *snapshot)
 	return nil
 }
 
-// GetSnapshots retrieves all snapshots for an event
-func (s *Storage) GetSnapshots(eventID string) ([]models.Snapshot, error) {
+// GetSnapshots retrieves all snapshots for a market
+func (s *Storage) GetSnapshots(marketID string) ([]models.Snapshot, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	snapshots, exists := s.snapshots[eventID]
+	snapshots, exists := s.snapshots[marketID]
 	if !exists {
 		return []models.Snapshot{}, nil
 	}
@@ -148,12 +148,12 @@ func (s *Storage) GetSnapshots(eventID string) ([]models.Snapshot, error) {
 	return snapshots, nil
 }
 
-// GetSnapshotsInWindow retrieves snapshots within a time window for an event
-func (s *Storage) GetSnapshotsInWindow(eventID string, window time.Duration) ([]models.Snapshot, error) {
+// GetSnapshotsInWindow retrieves snapshots within a time window for a market
+func (s *Storage) GetSnapshotsInWindow(marketID string, window time.Duration) ([]models.Snapshot, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	snapshots, exists := s.snapshots[eventID]
+	snapshots, exists := s.snapshots[marketID]
 	if !exists {
 		return []models.Snapshot{}, nil
 	}
@@ -231,7 +231,7 @@ func (s *Storage) Save() error {
 	data := PersistenceFile{
 		Version:   "2.0",
 		SavedAt:   time.Now(),
-		Events:    s.events,
+		Markets:   s.markets,
 		Snapshots: s.snapshots,
 	}
 
@@ -286,9 +286,9 @@ func (s *Storage) Load() error {
 	}
 
 	// Clear and restore state
-	s.events = data.Events
-	if s.events == nil {
-		s.events = make(map[string]*models.Event)
+	s.markets = data.Markets
+	if s.markets == nil {
+		s.markets = make(map[string]*models.Market)
 	}
 
 	s.snapshots = data.Snapshots
@@ -309,18 +309,18 @@ func (s *Storage) Load() error {
 
 // migrateToCompositeIDs migrates v1.0 data format to v2.0 composite ID format
 // In v1.0, single-market events used just EventID, while multi-market used EventID:MarketID
-// In v2.0, all events use EventID:MarketID format for consistency
+// In v2.0, all markets use EventID:MarketID format for consistency
 func (s *Storage) migrateToCompositeIDs() {
-	newEvents := make(map[string]*models.Event)
+	newMarkets := make(map[string]*models.Market)
 	newSnapshots := make(map[string][]models.Snapshot)
 
-	for id, event := range s.events {
+	for id, market := range s.markets {
 		// Check if ID needs migration (doesn't contain ":" and has MarketID)
-		if !strings.Contains(id, ":") && event.MarketID != "" {
+		if !strings.Contains(id, ":") && market.MarketID != "" {
 			// Migrate to composite ID format
-			newID := event.EventID + ":" + event.MarketID
-			event.ID = newID
-			newEvents[newID] = event
+			newID := market.EventID + ":" + market.MarketID
+			market.ID = newID
+			newMarkets[newID] = market
 
 			// Migrate associated snapshots
 			if snaps, exists := s.snapshots[id]; exists {
@@ -331,14 +331,14 @@ func (s *Storage) migrateToCompositeIDs() {
 			}
 		} else {
 			// Already in correct format or no MarketID
-			newEvents[id] = event
+			newMarkets[id] = market
 			if snaps, exists := s.snapshots[id]; exists {
 				newSnapshots[id] = snaps
 			}
 		}
 	}
 
-	s.events = newEvents
+	s.markets = newMarkets
 	s.snapshots = newSnapshots
 }
 
@@ -347,49 +347,79 @@ func (s *Storage) RotateSnapshots() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for eventID, snapshots := range s.snapshots {
+	for marketID, snapshots := range s.snapshots {
 		if len(snapshots) > s.maxSnapshotsPerEvent {
 			// Keep only the most recent snapshots
 			start := len(snapshots) - s.maxSnapshotsPerEvent
-			s.snapshots[eventID] = snapshots[start:]
+			s.snapshots[marketID] = snapshots[start:]
 		}
 	}
 
 	return nil
 }
 
-// RotateEvents removes events when exceeding max limit
-func (s *Storage) RotateEvents() error {
+// RotateMarkets removes markets when exceeding max limit
+func (s *Storage) RotateMarkets() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if len(s.events) <= s.maxEvents {
+	if len(s.markets) <= s.maxMarkets {
 		return nil
 	}
 
-	// Find oldest events to remove
-	type eventWithTime struct {
+	// Find oldest markets to remove
+	type marketWithTime struct {
 		id          string
 		lastUpdated time.Time
 	}
 
-	var eventList []eventWithTime
-	for id, event := range s.events {
-		eventList = append(eventList, eventWithTime{id: id, lastUpdated: event.LastUpdated})
+	var marketList []marketWithTime
+	for id, market := range s.markets {
+		marketList = append(marketList, marketWithTime{id: id, lastUpdated: market.LastUpdated})
 	}
 
 	// Sort by last updated (oldest first)
-	sort.Slice(eventList, func(i, j int) bool {
-		return eventList[i].lastUpdated.Before(eventList[j].lastUpdated)
+	sort.Slice(marketList, func(i, j int) bool {
+		return marketList[i].lastUpdated.Before(marketList[j].lastUpdated)
 	})
 
-	// Remove oldest events
-	toRemove := len(s.events) - s.maxEvents
+	// Remove oldest markets
+	toRemove := len(s.markets) - s.maxMarkets
 	for i := 0; i < toRemove; i++ {
-		eventID := eventList[i].id
-		delete(s.events, eventID)
-		delete(s.snapshots, eventID)
+		marketID := marketList[i].id
+		delete(s.markets, marketID)
+		delete(s.snapshots, marketID)
 	}
 
 	return nil
+}
+
+// AddEvent is an alias for AddMarket for backward compatibility.
+// Deprecated: Use AddMarket instead.
+func (s *Storage) AddEvent(market *models.Market) error {
+	return s.AddMarket(market)
+}
+
+// GetEvent is an alias for GetMarket for backward compatibility.
+// Deprecated: Use GetMarket instead.
+func (s *Storage) GetEvent(id string) (*models.Market, error) {
+	return s.GetMarket(id)
+}
+
+// UpdateEvent is an alias for UpdateMarket for backward compatibility.
+// Deprecated: Use UpdateMarket instead.
+func (s *Storage) UpdateEvent(market *models.Market) error {
+	return s.UpdateMarket(market)
+}
+
+// GetAllEvents is an alias for GetAllMarkets for backward compatibility.
+// Deprecated: Use GetAllMarkets instead.
+func (s *Storage) GetAllEvents() ([]*models.Market, error) {
+	return s.GetAllMarkets()
+}
+
+// RotateEvents is an alias for RotateMarkets for backward compatibility.
+// Deprecated: Use RotateMarkets instead.
+func (s *Storage) RotateEvents() error {
+	return s.RotateMarkets()
 }

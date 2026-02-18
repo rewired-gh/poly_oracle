@@ -10,13 +10,14 @@ import (
 	"github.com/poly-oracle/internal/models"
 )
 
-func TestStorage_AddAndGetEvent(t *testing.T) {
+func TestStorage_AddAndGetMarket(t *testing.T) {
 	s := New(100, 50, "/tmp/test-storage.json", 0644, 0755)
 
 	now := time.Now()
-	event := &models.Event{
-		ID:             "test-1",
-		EventID:        "test-1",
+	market := &models.Market{
+		ID:             "test-1:event-1",
+		EventID:        "event-1",
+		MarketID:       "event-1",
 		Title:          "Test question?",
 		Category:       "politics",
 		YesProbability: 0.75,
@@ -26,30 +27,31 @@ func TestStorage_AddAndGetEvent(t *testing.T) {
 		CreatedAt:      now.Add(-1 * time.Hour), // Created before last updated
 	}
 
-	// Test AddEvent
-	if err := s.AddEvent(event); err != nil {
-		t.Fatalf("AddEvent failed: %v", err)
+	// Test AddMarket
+	if err := s.AddMarket(market); err != nil {
+		t.Fatalf("AddMarket failed: %v", err)
 	}
 
-	// Test GetEvent
-	retrieved, err := s.GetEvent("test-1")
+	// Test GetMarket
+	retrieved, err := s.GetMarket("test-1:event-1")
 	if err != nil {
-		t.Fatalf("GetEvent failed: %v", err)
+		t.Fatalf("GetMarket failed: %v", err)
 	}
 
-	if retrieved.ID != event.ID {
-		t.Errorf("Expected ID %s, got %s", event.ID, retrieved.ID)
+	if retrieved.ID != market.ID {
+		t.Errorf("Expected ID %s, got %s", market.ID, retrieved.ID)
 	}
 }
 
 func TestStorage_AddSnapshot(t *testing.T) {
 	s := New(100, 50, "/tmp/test-storage.json", 0644, 0755)
 
-	// Add event first
+	// Add market first
 	now := time.Now()
-	event := &models.Event{
-		ID:             "event-1",
+	market := &models.Market{
+		ID:             "event-1:market-1",
 		EventID:        "event-1",
+		MarketID:       "market-1",
 		Title:          "Test?",
 		Category:       "politics",
 		YesProbability: 0.75,
@@ -58,14 +60,14 @@ func TestStorage_AddSnapshot(t *testing.T) {
 		LastUpdated:    now,
 		CreatedAt:      now.Add(-1 * time.Hour),
 	}
-	if err := s.AddEvent(event); err != nil {
-		t.Fatalf("Failed to add event: %v", err)
+	if err := s.AddMarket(market); err != nil {
+		t.Fatalf("Failed to add market: %v", err)
 	}
 
 	// Add snapshot
 	snapshot := &models.Snapshot{
 		ID:             "snap-1",
-		EventID:        "event-1",
+		EventID:        "event-1:market-1",
 		YesProbability: 0.75,
 		NoProbability:  0.25,
 		Timestamp:      time.Now(),
@@ -77,7 +79,7 @@ func TestStorage_AddSnapshot(t *testing.T) {
 	}
 
 	// Get snapshots
-	snapshots, err := s.GetSnapshots("event-1")
+	snapshots, err := s.GetSnapshots("event-1:market-1")
 	if err != nil {
 		t.Fatalf("GetSnapshots failed: %v", err)
 	}
@@ -95,7 +97,7 @@ func TestStorage_GetTopChanges(t *testing.T) {
 		{
 			ID:             "change-1",
 			EventID:        "event-1",
-			EventQuestion:  "Test 1?",
+			EventTitle:     "Test 1?",
 			Magnitude:      0.15,
 			Direction:      "increase",
 			OldProbability: 0.60,
@@ -106,7 +108,7 @@ func TestStorage_GetTopChanges(t *testing.T) {
 		{
 			ID:             "change-2",
 			EventID:        "event-2",
-			EventQuestion:  "Test 2?",
+			EventTitle:     "Test 2?",
 			Magnitude:      0.25,
 			Direction:      "increase",
 			OldProbability: 0.50,
@@ -117,7 +119,7 @@ func TestStorage_GetTopChanges(t *testing.T) {
 		{
 			ID:             "change-3",
 			EventID:        "event-3",
-			EventQuestion:  "Test 3?",
+			EventTitle:     "Test 3?",
 			Magnitude:      0.10,
 			Direction:      "decrease",
 			OldProbability: 0.80,
@@ -155,13 +157,14 @@ func TestStorage_GetTopChanges(t *testing.T) {
 }
 
 func TestStorage_RotateSnapshots(t *testing.T) {
-	s := New(100, 3, "/tmp/test-storage.json", 0644, 0755) // Max 3 snapshots per event
+	s := New(100, 3, "/tmp/test-storage.json", 0644, 0755) // Max 3 snapshots per market
 
-	// Add event
+	// Add market
 	now := time.Now()
-	event := &models.Event{
-		ID:             "event-1",
+	market := &models.Market{
+		ID:             "event-1:market-1",
 		EventID:        "event-1",
+		MarketID:       "market-1",
 		Title:          "Test?",
 		Category:       "politics",
 		YesProbability: 0.75,
@@ -170,15 +173,15 @@ func TestStorage_RotateSnapshots(t *testing.T) {
 		LastUpdated:    now,
 		CreatedAt:      now.Add(-1 * time.Hour),
 	}
-	if err := s.AddEvent(event); err != nil {
-		t.Fatalf("Failed to add event: %v", err)
+	if err := s.AddMarket(market); err != nil {
+		t.Fatalf("Failed to add market: %v", err)
 	}
 
 	// Add 5 snapshots with past timestamps
 	for i := 0; i < 5; i++ {
 		snapshot := &models.Snapshot{
 			ID:             fmt.Sprintf("snap-%d", i),
-			EventID:        "event-1",
+			EventID:        "event-1:market-1",
 			YesProbability: 0.75,
 			NoProbability:  0.25,
 			Timestamp:      now.Add(time.Duration(-5+i) * time.Minute), // Past timestamps
@@ -195,7 +198,7 @@ func TestStorage_RotateSnapshots(t *testing.T) {
 	}
 
 	// Should have only 3 snapshots
-	snapshots, _ := s.GetSnapshots("event-1")
+	snapshots, _ := s.GetSnapshots("event-1:market-1")
 	if len(snapshots) != 3 {
 		t.Errorf("Expected 3 snapshots after rotation, got %d", len(snapshots))
 	}
@@ -226,9 +229,10 @@ func TestStorage_SaveAndLoad(t *testing.T) {
 
 	// Add test data
 	now := time.Now()
-	event := &models.Event{
-		ID:             "event-1",
+	market := &models.Market{
+		ID:             "event-1:market-1",
 		EventID:        "event-1",
+		MarketID:       "market-1",
 		Title:          "Test?",
 		Category:       "politics",
 		YesProbability: 0.75,
@@ -237,8 +241,8 @@ func TestStorage_SaveAndLoad(t *testing.T) {
 		LastUpdated:    now,
 		CreatedAt:      now.Add(-1 * time.Hour),
 	}
-	if err := s.AddEvent(event); err != nil {
-		t.Fatalf("Failed to add event: %v", err)
+	if err := s.AddMarket(market); err != nil {
+		t.Fatalf("Failed to add market: %v", err)
 	}
 
 	// Save
@@ -253,9 +257,9 @@ func TestStorage_SaveAndLoad(t *testing.T) {
 	}
 
 	// Verify data restored
-	loaded, err := s2.GetEvent("event-1")
+	loaded, err := s2.GetMarket("event-1:market-1")
 	if err != nil {
-		t.Fatalf("GetEvent after load failed: %v", err)
+		t.Fatalf("GetMarket after load failed: %v", err)
 	}
 
 	if loaded.Title != "Test?" {
@@ -266,11 +270,12 @@ func TestStorage_SaveAndLoad(t *testing.T) {
 func TestStorage_GetSnapshotsInWindow_Sorted(t *testing.T) {
 	s := New(100, 50, "/tmp/test-storage.json", 0644, 0755)
 
-	// Add event
+	// Add market
 	now := time.Now()
-	event := &models.Event{
-		ID:             "event-1",
+	market := &models.Market{
+		ID:             "event-1:market-1",
 		EventID:        "event-1",
+		MarketID:       "market-1",
 		Title:          "Test?",
 		Category:       "politics",
 		YesProbability: 0.75,
@@ -279,8 +284,8 @@ func TestStorage_GetSnapshotsInWindow_Sorted(t *testing.T) {
 		LastUpdated:    now,
 		CreatedAt:      now.Add(-1 * time.Hour),
 	}
-	if err := s.AddEvent(event); err != nil {
-		t.Fatalf("Failed to add event: %v", err)
+	if err := s.AddMarket(market); err != nil {
+		t.Fatalf("Failed to add market: %v", err)
 	}
 
 	// Add 5 snapshots OUT OF ORDER (intentionally not chronological)
@@ -295,7 +300,7 @@ func TestStorage_GetSnapshotsInWindow_Sorted(t *testing.T) {
 	for i, ts := range timestamps {
 		snapshot := &models.Snapshot{
 			ID:             fmt.Sprintf("snap-%d", i),
-			EventID:        "event-1",
+			EventID:        "event-1:market-1",
 			YesProbability: float64(50+i*10) / 100.0,
 			NoProbability:  float64(50-i*10) / 100.0,
 			Timestamp:      ts,
@@ -307,7 +312,7 @@ func TestStorage_GetSnapshotsInWindow_Sorted(t *testing.T) {
 	}
 
 	// Get snapshots in 1 hour window (should get all 5)
-	snapshots, err := s.GetSnapshotsInWindow("event-1", time.Hour)
+	snapshots, err := s.GetSnapshotsInWindow("event-1:market-1", time.Hour)
 	if err != nil {
 		t.Fatalf("GetSnapshotsInWindow failed: %v", err)
 	}
@@ -333,13 +338,14 @@ func TestStorage_GetSnapshotsInWindow_Sorted(t *testing.T) {
 	}
 }
 
-func TestStorage_UpdateEvent(t *testing.T) {
+func TestStorage_UpdateMarket(t *testing.T) {
 	s := New(100, 50, "/tmp/test-storage.json", 0644, 0755)
 
 	now := time.Now()
-	event := &models.Event{
-		ID:             "test-event",
+	market := &models.Market{
+		ID:             "test-event:test-market",
 		EventID:        "test-event",
+		MarketID:       "test-market",
 		Title:          "Original Title",
 		Category:       "politics",
 		YesProbability: 0.75,
@@ -348,23 +354,23 @@ func TestStorage_UpdateEvent(t *testing.T) {
 		LastUpdated:    now,
 		CreatedAt:      now.Add(-1 * time.Hour),
 	}
-	if err := s.AddEvent(event); err != nil {
-		t.Fatalf("AddEvent failed: %v", err)
+	if err := s.AddMarket(market); err != nil {
+		t.Fatalf("AddMarket failed: %v", err)
 	}
 
-	// Update the event
-	event.Title = "Updated Title"
-	event.YesProbability = 0.80
-	event.NoProbability = 0.20
+	// Update the market
+	market.Title = "Updated Title"
+	market.YesProbability = 0.80
+	market.NoProbability = 0.20
 
-	if err := s.UpdateEvent(event); err != nil {
-		t.Errorf("UpdateEvent failed: %v", err)
+	if err := s.UpdateMarket(market); err != nil {
+		t.Errorf("UpdateMarket failed: %v", err)
 	}
 
 	// Verify update
-	retrieved, err := s.GetEvent("test-event")
+	retrieved, err := s.GetMarket("test-event:test-market")
 	if err != nil {
-		t.Fatalf("GetEvent after update failed: %v", err)
+		t.Fatalf("GetMarket after update failed: %v", err)
 	}
 	if retrieved.Title != "Updated Title" {
 		t.Errorf("Expected title 'Updated Title', got '%s'", retrieved.Title)
@@ -374,13 +380,14 @@ func TestStorage_UpdateEvent(t *testing.T) {
 	}
 }
 
-func TestStorage_UpdateEvent_NotFound(t *testing.T) {
+func TestStorage_UpdateMarket_NotFound(t *testing.T) {
 	s := New(100, 50, "/tmp/test-storage.json", 0644, 0755)
 
 	now := time.Now()
-	event := &models.Event{
-		ID:             "nonexistent",
+	market := &models.Market{
+		ID:             "nonexistent:market",
 		EventID:        "nonexistent",
+		MarketID:       "market",
 		Title:          "Does Not Exist",
 		Category:       "politics",
 		YesProbability: 0.50,
@@ -390,31 +397,32 @@ func TestStorage_UpdateEvent_NotFound(t *testing.T) {
 		CreatedAt:      now.Add(-1 * time.Hour),
 	}
 
-	err := s.UpdateEvent(event)
+	err := s.UpdateMarket(market)
 	if err == nil {
-		t.Error("Expected error when updating nonexistent event, got nil")
+		t.Error("Expected error when updating nonexistent market, got nil")
 	}
 }
 
-func TestStorage_GetAllEvents(t *testing.T) {
+func TestStorage_GetAllMarkets(t *testing.T) {
 	s := New(100, 50, "/tmp/test-storage.json", 0644, 0755)
 
 	// Initially empty
-	events, err := s.GetAllEvents()
+	markets, err := s.GetAllMarkets()
 	if err != nil {
-		t.Fatalf("GetAllEvents on empty storage failed: %v", err)
+		t.Fatalf("GetAllMarkets on empty storage failed: %v", err)
 	}
-	if len(events) != 0 {
-		t.Errorf("Expected 0 events, got %d", len(events))
+	if len(markets) != 0 {
+		t.Errorf("Expected 0 markets, got %d", len(markets))
 	}
 
-	// Add 3 events
+	// Add 3 markets
 	now := time.Now()
 	for i := 0; i < 3; i++ {
-		event := &models.Event{
-			ID:             fmt.Sprintf("event-%d", i),
+		market := &models.Market{
+			ID:             fmt.Sprintf("event-%d:market-%d", i, i),
 			EventID:        fmt.Sprintf("event-%d", i),
-			Title:          fmt.Sprintf("Test Event %d", i),
+			MarketID:       fmt.Sprintf("market-%d", i),
+			Title:          fmt.Sprintf("Test Market %d", i),
 			Category:       "politics",
 			YesProbability: 0.50,
 			NoProbability:  0.50,
@@ -422,34 +430,35 @@ func TestStorage_GetAllEvents(t *testing.T) {
 			LastUpdated:    now,
 			CreatedAt:      now.Add(-1 * time.Hour),
 		}
-		if err := s.AddEvent(event); err != nil {
-			t.Fatalf("AddEvent failed: %v", err)
+		if err := s.AddMarket(market); err != nil {
+			t.Fatalf("AddMarket failed: %v", err)
 		}
 	}
 
-	// GetAllEvents should return all 3
-	events, err = s.GetAllEvents()
+	// GetAllMarkets should return all 3
+	markets, err = s.GetAllMarkets()
 	if err != nil {
-		t.Fatalf("GetAllEvents failed: %v", err)
+		t.Fatalf("GetAllMarkets failed: %v", err)
 	}
-	if len(events) != 3 {
-		t.Errorf("Expected 3 events, got %d", len(events))
+	if len(markets) != 3 {
+		t.Errorf("Expected 3 markets, got %d", len(markets))
 	}
 }
 
-func TestStorage_RotateEvents(t *testing.T) {
-	maxEvents := 5
-	s := New(maxEvents, 50, "/tmp/test-storage.json", 0644, 0755)
+func TestStorage_RotateMarkets(t *testing.T) {
+	maxMarkets := 5
+	s := New(maxMarkets, 50, "/tmp/test-storage.json", 0644, 0755)
 
 	now := time.Now()
 
-	// Add 10 events with different timestamps (newer events have higher index)
+	// Add 10 markets with different timestamps (newer markets have higher index)
 	// Use past timestamps to pass validation
 	for i := 0; i < 10; i++ {
-		event := &models.Event{
-			ID:             fmt.Sprintf("event-%d", i),
+		market := &models.Market{
+			ID:             fmt.Sprintf("event-%d:market-%d", i, i),
 			EventID:        fmt.Sprintf("event-%d", i),
-			Title:          fmt.Sprintf("Test Event %d", i),
+			MarketID:       fmt.Sprintf("market-%d", i),
+			Title:          fmt.Sprintf("Test Market %d", i),
 			Category:       "politics",
 			YesProbability: 0.50,
 			NoProbability:  0.50,
@@ -457,40 +466,40 @@ func TestStorage_RotateEvents(t *testing.T) {
 			LastUpdated:    now.Add(-time.Duration(10-i) * time.Second), // oldest=event-0, newest=event-9
 			CreatedAt:      now.Add(-1 * time.Hour),
 		}
-		if err := s.AddEvent(event); err != nil {
-			t.Fatalf("AddEvent failed for event-%d: %v", i, err)
+		if err := s.AddMarket(market); err != nil {
+			t.Fatalf("AddMarket failed for market-%d: %v", i, err)
 		}
 	}
 
 	// Verify all 10 added
-	events, _ := s.GetAllEvents()
-	if len(events) != 10 {
-		t.Fatalf("Expected 10 events before rotation, got %d", len(events))
+	markets, _ := s.GetAllMarkets()
+	if len(markets) != 10 {
+		t.Fatalf("Expected 10 markets before rotation, got %d", len(markets))
 	}
 
 	// Rotate
-	if err := s.RotateEvents(); err != nil {
-		t.Errorf("RotateEvents failed: %v", err)
+	if err := s.RotateMarkets(); err != nil {
+		t.Errorf("RotateMarkets failed: %v", err)
 	}
 
-	// Should have only maxEvents (5) remaining - the newest ones
-	events, err := s.GetAllEvents()
+	// Should have only maxMarkets (5) remaining - the newest ones
+	markets, err := s.GetAllMarkets()
 	if err != nil {
-		t.Fatalf("GetAllEvents after rotation failed: %v", err)
+		t.Fatalf("GetAllMarkets after rotation failed: %v", err)
 	}
-	if len(events) != maxEvents {
-		t.Errorf("Expected %d events after rotation, got %d", maxEvents, len(events))
+	if len(markets) != maxMarkets {
+		t.Errorf("Expected %d markets after rotation, got %d", maxMarkets, len(markets))
 	}
 
-	// Verify oldest events (0-4) were removed, newest (5-9) remain
-	for _, event := range events {
+	// Verify oldest markets (0-4) were removed, newest (5-9) remain
+	for _, market := range markets {
 		var idx int
-		if _, err := fmt.Sscanf(event.ID, "event-%d", &idx); err != nil {
-			t.Errorf("Failed to parse event ID %s: %v", event.ID, err)
+		if _, err := fmt.Sscanf(market.ID, "event-%d:market-%d", &idx, &idx); err != nil {
+			t.Errorf("Failed to parse market ID %s: %v", market.ID, err)
 			continue
 		}
 		if idx < 5 {
-			t.Errorf("Old event %s should have been rotated out", event.ID)
+			t.Errorf("Old market %s should have been rotated out", market.ID)
 		}
 	}
 }
@@ -504,12 +513,12 @@ func TestStorage_MigrateToCompositeIDs(t *testing.T) {
 	v1Data := PersistenceFile{
 		Version: "1.0",
 		SavedAt: now,
-		Events: map[string]*models.Event{
+		Markets: map[string]*models.Market{
 			"event-123": { // Old format: just event ID
 				ID:             "event-123",
 				EventID:        "event-123",
 				MarketID:       "market-456",
-				Title:          "Test Event",
+				Title:          "Test Market",
 				Category:       "politics",
 				YesProbability: 0.75,
 				NoProbability:  0.25,
@@ -555,32 +564,32 @@ func TestStorage_MigrateToCompositeIDs(t *testing.T) {
 		t.Fatalf("Load failed: %v", err)
 	}
 
-	// Verify event was migrated to composite ID format
+	// Verify market was migrated to composite ID format
 	compositeID := "event-123:market-456"
 
 	// Old ID should not exist
-	if _, err := s.GetEvent("event-123"); err == nil {
+	if _, err := s.GetMarket("event-123"); err == nil {
 		t.Error("Old ID format 'event-123' should not exist after migration")
 	}
 
 	// New composite ID should exist
-	migratedEvent, err := s.GetEvent(compositeID)
+	migratedMarket, err := s.GetMarket(compositeID)
 	if err != nil {
-		t.Fatalf("Failed to get migrated event with composite ID: %v", err)
+		t.Fatalf("Failed to get migrated market with composite ID: %v", err)
 	}
 
-	// Verify event data is preserved
-	if migratedEvent.ID != compositeID {
-		t.Errorf("Expected migrated ID '%s', got '%s'", compositeID, migratedEvent.ID)
+	// Verify market data is preserved
+	if migratedMarket.ID != compositeID {
+		t.Errorf("Expected migrated ID '%s', got '%s'", compositeID, migratedMarket.ID)
 	}
-	if migratedEvent.EventID != "event-123" {
-		t.Errorf("Expected EventID 'event-123', got '%s'", migratedEvent.EventID)
+	if migratedMarket.EventID != "event-123" {
+		t.Errorf("Expected EventID 'event-123', got '%s'", migratedMarket.EventID)
 	}
-	if migratedEvent.MarketID != "market-456" {
-		t.Errorf("Expected MarketID 'market-456', got '%s'", migratedEvent.MarketID)
+	if migratedMarket.MarketID != "market-456" {
+		t.Errorf("Expected MarketID 'market-456', got '%s'", migratedMarket.MarketID)
 	}
-	if migratedEvent.Title != "Test Event" {
-		t.Errorf("Expected title 'Test Event', got '%s'", migratedEvent.Title)
+	if migratedMarket.Title != "Test Market" {
+		t.Errorf("Expected title 'Test Market', got '%s'", migratedMarket.Title)
 	}
 
 	// Verify snapshots were migrated
@@ -615,5 +624,58 @@ func TestStorage_MigrateToCompositeIDs(t *testing.T) {
 	}
 	if v2Data.Version != "2.0" {
 		t.Errorf("Expected version '2.0' after save, got '%s'", v2Data.Version)
+	}
+}
+
+// Test backward compatibility aliases
+func TestStorage_EventAliases(t *testing.T) {
+	s := New(100, 50, "/tmp/test-aliases.json", 0644, 0755)
+
+	now := time.Now()
+	market := &models.Market{
+		ID:             "test:event",
+		EventID:        "test",
+		MarketID:       "event",
+		Title:          "Alias Test",
+		Category:       "politics",
+		YesProbability: 0.50,
+		NoProbability:  0.50,
+		Active:         true,
+		LastUpdated:    now,
+		CreatedAt:      now.Add(-1 * time.Hour),
+	}
+
+	// Test AddEvent alias
+	if err := s.AddEvent(market); err != nil {
+		t.Fatalf("AddEvent alias failed: %v", err)
+	}
+
+	// Test GetEvent alias
+	retrieved, err := s.GetEvent("test:event")
+	if err != nil {
+		t.Fatalf("GetEvent alias failed: %v", err)
+	}
+	if retrieved.Title != "Alias Test" {
+		t.Errorf("Expected title 'Alias Test', got '%s'", retrieved.Title)
+	}
+
+	// Test GetAllEvents alias
+	all, err := s.GetAllEvents()
+	if err != nil {
+		t.Fatalf("GetAllEvents alias failed: %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("Expected 1 market, got %d", len(all))
+	}
+
+	// Test UpdateEvent alias
+	market.Title = "Updated Alias Test"
+	if err := s.UpdateEvent(market); err != nil {
+		t.Fatalf("UpdateEvent alias failed: %v", err)
+	}
+
+	// Test RotateEvents alias (no error expected)
+	if err := s.RotateEvents(); err != nil {
+		t.Fatalf("RotateEvents alias failed: %v", err)
 	}
 }

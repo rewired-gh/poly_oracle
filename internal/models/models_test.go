@@ -5,16 +5,16 @@ import (
 	"time"
 )
 
-func TestEventValidate(t *testing.T) {
+func TestMarketValidate(t *testing.T) {
 	tests := []struct {
 		name    string
-		event   Event
+		market  Market
 		wantErr bool
 	}{
 		{
-			name: "valid event",
-			event: Event{
-				ID:             "event-123",
+			name: "valid market",
+			market: Market{
+				ID:             "event-123:market-1",
 				EventID:        "event-123",
 				Title:          "Will X happen?",
 				Category:       "politics",
@@ -28,7 +28,7 @@ func TestEventValidate(t *testing.T) {
 		},
 		{
 			name: "empty ID",
-			event: Event{
+			market: Market{
 				Title:          "Will X happen?",
 				Category:       "politics",
 				YesProbability: 0.75,
@@ -37,9 +37,9 @@ func TestEventValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "empty question",
-			event: Event{
-				ID:             "event-123",
+			name: "empty title",
+			market: Market{
+				ID:             "event-123:market-1",
 				Category:       "politics",
 				YesProbability: 0.75,
 				NoProbability:  0.25,
@@ -48,8 +48,8 @@ func TestEventValidate(t *testing.T) {
 		},
 		{
 			name: "invalid yes probability",
-			event: Event{
-				ID:             "event-123",
+			market: Market{
+				ID:             "event-123:market-1",
 				Title:          "Will X happen?",
 				Category:       "politics",
 				YesProbability: 1.5,
@@ -59,8 +59,8 @@ func TestEventValidate(t *testing.T) {
 		},
 		{
 			name: "probabilities don't sum to 1",
-			event: Event{
-				ID:             "event-123",
+			market: Market{
+				ID:             "event-123:market-1",
 				Title:          "Will X happen?",
 				Category:       "politics",
 				YesProbability: 0.5,
@@ -72,9 +72,9 @@ func TestEventValidate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := tt.event.Validate()
+			err := tt.market.Validate()
 			if (err != nil) != tt.wantErr {
-				t.Errorf("Event.Validate() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("Market.Validate() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
@@ -156,7 +156,7 @@ func TestChangeValidate(t *testing.T) {
 			change: Change{
 				ID:             "change-123",
 				EventID:        "event-123",
-				EventQuestion:  "Will X happen?",
+				EventTitle:     "Will X happen?",
 				Magnitude:      0.15,
 				Direction:      "increase",
 				OldProbability: 0.60,
@@ -172,7 +172,7 @@ func TestChangeValidate(t *testing.T) {
 			change: Change{
 				ID:             "change-456",
 				EventID:        "event-123",
-				EventQuestion:  "Will Y happen?",
+				EventTitle:     "Will Y happen?",
 				Magnitude:      0.20,
 				Direction:      "decrease",
 				OldProbability: 0.80,
@@ -188,7 +188,7 @@ func TestChangeValidate(t *testing.T) {
 			change: Change{
 				ID:             "change-789",
 				EventID:        "event-123",
-				EventQuestion:  "Will Z happen?",
+				EventTitle:     "Will Z happen?",
 				Magnitude:      0.10,
 				Direction:      "increase",
 				OldProbability: 0.60,
@@ -203,7 +203,7 @@ func TestChangeValidate(t *testing.T) {
 			change: Change{
 				ID:             "change-111",
 				EventID:        "event-123",
-				EventQuestion:  "Test",
+				EventTitle:     "Test",
 				Magnitude:      0.10,
 				Direction:      "sideways",
 				OldProbability: 0.60,

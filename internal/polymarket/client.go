@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/poly-oracle/internal/models"
@@ -57,12 +58,15 @@ type PolymarketTag struct {
 
 // PolymarketMarket represents a market from Polymarket API
 type PolymarketMarket struct {
-	ID            string `json:"id"`
-	ConditionID   string `json:"conditionId"`
-	Question      string `json:"question"`
-	Outcomes      string `json:"outcomes"`      // JSON string: "[\"Yes\", \"No\"]"
-	OutcomePrices string `json:"outcomePrices"` // JSON string: "[\"0.75\", \"0.25\"]"
-	ClobTokenIds  string `json:"clobTokenIds"`  // JSON string: "[\"token1\", \"token2\"]"
+	ID            string  `json:"id"`
+	ConditionID   string  `json:"conditionId"`
+	Question      string  `json:"question"`
+	Outcomes      string  `json:"outcomes"`      // JSON string: "[\"Yes\", \"No\"]"
+	OutcomePrices string  `json:"outcomePrices"` // JSON string: "[\"0.75\", \"0.25\"]"
+	ClobTokenIds  string  `json:"clobTokenIds"`  // JSON string: "[\"token1\", \"token2\"]"
+	Volume        string  `json:"volume"`        // Total volume (string in API)
+	Volume1wk     float64 `json:"volume1wk"`     // 1-week volume (number in API)
+	Volume1mo     float64 `json:"volume1mo"`     // 1-month volume (number in API)
 }
 
 // ClientConfig holds optional configuration for the Polymarket client
@@ -120,155 +124,190 @@ func NewClient(gammaAPIURL, clobAPIURL string, timeout time.Duration, cfg ...Cli
 
 // FetchEvents retrieves events from Polymarket Gamma API with filtering
 // Filter order: 1) categories, 2) top K by volume (logical OR), 3) then detect changes
-func (c *Client) FetchEvents(ctx context.Context, categories []string, vol24hrMin, vol1wkMin, vol1moMin float64, volumeFilterOR bool, limit int) ([]models.Event, error) {
-	// Build URL with query parameters
-	u, err := url.Parse(c.gammaAPIURL + "/events")
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse URL: %w", err)
-	}
-
-	q := u.Query()
-	q.Set("active", "true")
-	q.Set("closed", "false")
-	q.Set("limit", fmt.Sprintf("%d", limit*3)) // Fetch 3x to allow for filtering
-
-	// Sort by volume24hr descending (one of the volume metrics)
-	q.Set("order", "volume24hr")
-	q.Set("ascending", "false")
-
-	u.RawQuery = q.Encode()
-
-	resp, err := c.doRequest(ctx, u.String())
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch events from %s: %w", u.String(), err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	// Validate content type
-	contentType := resp.Header.Get("Content-Type")
-	if contentType != "" && contentType != "application/json" && !containsJSON(contentType) {
-		return nil, fmt.Errorf("unexpected content type: %s (expected application/json)", contentType)
-	}
-
-	// Response is array directly, not wrapped
-	var pmEvents []PolymarketEvent
-	if err := json.NewDecoder(resp.Body).Decode(&pmEvents); err != nil {
-		return nil, fmt.Errorf("failed to decode events JSON: %w", err)
-	}
-
-	if len(pmEvents) == 0 {
-		return []models.Event{}, nil
-	}
-
+// Uses pagination to fetch events beyond the API's 500 per-request limit.
+func (c *Client) FetchEvents(ctx context.Context, categories []string, vol24hrMin, vol1wkMin, vol1moMin float64, volumeFilterOR bool, limit int) ([]models.Market, error) {
 	// Filter by categories
 	categoryMap := make(map[string]bool)
 	for _, cat := range categories {
 		categoryMap[cat] = true
 	}
 
-	var events []models.Event
-	for _, pe := range pmEvents {
-		// Filter by category using tags (category field is often null in API)
-		if len(categories) > 0 {
-			// Check if any tag matches the requested categories
-			tagMatch := false
-			for _, tag := range pe.Tags {
-				if categoryMap[tag.Slug] {
-					tagMatch = true
-					break
-				}
-			}
-			if !tagMatch {
-				continue
-			}
+	var allEvents []models.Market
+	const pageSize = 500 // API max per request
+	maxFetch := limit * 3
+
+	// Paginate through results
+	for offset := 0; offset < maxFetch; offset += pageSize {
+		// Build URL with query parameters
+		u, err := url.Parse(c.gammaAPIURL + "/events")
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse URL: %w", err)
 		}
 
-		// Apply volume filtering (logical OR or AND)
-		if vol24hrMin > 0 || vol1wkMin > 0 || vol1moMin > 0 {
-			vol24hrPass := pe.Volume24hr >= vol24hrMin
-			vol1wkPass := pe.Volume1wk >= vol1wkMin
-			vol1moPass := pe.Volume1mo >= vol1moMin
+		q := u.Query()
+		q.Set("active", "true")
+		q.Set("closed", "false")
+		q.Set("limit", fmt.Sprintf("%d", pageSize))
+		q.Set("offset", fmt.Sprintf("%d", offset))
 
-			if volumeFilterOR {
-				// Logical OR: include if ANY condition passes
-				if !vol24hrPass && !vol1wkPass && !vol1moPass {
+		// Sort by volume24hr descending (one of the volume metrics)
+		q.Set("order", "volume24hr")
+		q.Set("ascending", "false")
+
+		u.RawQuery = q.Encode()
+
+		resp, err := c.doRequest(ctx, u.String())
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch events from %s: %w", u.String(), err)
+		}
+
+		// Validate content type
+		contentType := resp.Header.Get("Content-Type")
+		if contentType != "" && contentType != "application/json" && !containsJSON(contentType) {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("unexpected content type: %s (expected application/json)", contentType)
+		}
+
+		// Response is array directly, not wrapped
+		var pmEvents []PolymarketEvent
+		if err := json.NewDecoder(resp.Body).Decode(&pmEvents); err != nil {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("failed to decode events JSON: %w", err)
+		}
+		_ = resp.Body.Close()
+
+		// No more events
+		if len(pmEvents) == 0 {
+			break
+		}
+
+		// Process events from this page
+		for _, pe := range pmEvents {
+			// Filter by category using tags (category field is often null in API)
+			if len(categories) > 0 {
+				// Check if any tag matches the requested categories
+				tagMatch := false
+				for _, tag := range pe.Tags {
+					if categoryMap[tag.Slug] {
+						tagMatch = true
+						break
+					}
+				}
+				if !tagMatch {
 					continue
 				}
-			} else {
-				// Logical AND: include if ALL conditions pass
-				if !vol24hrPass || !vol1wkPass || !vol1moPass {
+			}
+
+			// Apply volume filtering (logical OR or AND)
+			if vol24hrMin > 0 || vol1wkMin > 0 || vol1moMin > 0 {
+				vol24hrPass := pe.Volume24hr >= vol24hrMin
+				vol1wkPass := pe.Volume1wk >= vol1wkMin
+				vol1moPass := pe.Volume1mo >= vol1moMin
+
+				if volumeFilterOR {
+					// Logical OR: include if ANY condition passes
+					if !vol24hrPass && !vol1wkPass && !vol1moPass {
+						continue
+					}
+				} else {
+					// Logical AND: include if ALL conditions pass
+					if !vol24hrPass || !vol1wkPass || !vol1moPass {
+						continue
+					}
+				}
+			}
+
+			// Extract primary category from tags (first matching tag or first tag overall)
+			primaryCategory := ""
+			if len(pe.Tags) > 0 {
+				// Try to find a tag that matches our filter categories
+				for _, tag := range pe.Tags {
+					if categoryMap[tag.Slug] {
+						primaryCategory = tag.Slug
+						break
+					}
+				}
+				// If no match found, use the first tag
+				if primaryCategory == "" {
+					primaryCategory = pe.Tags[0].Slug
+				}
+			}
+
+			// Process each market individually
+			// An event can have multiple markets, and we track each one separately
+			for _, market := range pe.Markets {
+				yesProb, noProb, err := parseMarketProbabilities(market)
+				if err != nil {
+					continue // Skip invalid markets
+				}
+
+				// Skip markets with no valid probability data
+				if yesProb == 0 && noProb == 0 {
 					continue
 				}
-			}
-		}
 
-		// Extract primary category from tags (first matching tag or first tag overall)
-		primaryCategory := ""
-		if len(pe.Tags) > 0 {
-			// Try to find a tag that matches our filter categories
-			for _, tag := range pe.Tags {
-				if categoryMap[tag.Slug] {
-					primaryCategory = tag.Slug
-					break
+				// Capture current time once to ensure CreatedAt <= LastUpdated
+				now := time.Now()
+
+				// Always use composite ID format for consistency
+				// This prevents data loss when events transition from single to multi-market
+				compositeID := pe.ID + ":" + market.ID
+
+				// Use market-level volume for scoring accuracy in multi-market events
+				// Markets have volume1wk/volume1mo but not volume24hr
+				// Estimate volume24hr proportionally based on market's share of event's weekly volume
+				marketVolume1wk := market.Volume1wk
+				marketVolume1mo := market.Volume1mo
+				marketVolume24hr := pe.Volume24hr // fallback to event-level
+
+				// Proportionally estimate 24hr volume from market's share of weekly volume
+				if pe.Volume1wk > 0 && marketVolume1wk > 0 {
+					marketShare := marketVolume1wk / pe.Volume1wk
+					marketVolume24hr = pe.Volume24hr * marketShare
 				}
-			}
-			// If no match found, use the first tag
-			if primaryCategory == "" {
-				primaryCategory = pe.Tags[0].Slug
+
+				event := models.Market{
+					ID:             compositeID,
+					EventID:        pe.ID,
+					MarketID:       market.ID,
+					MarketQuestion: market.Question,
+					Title:          pe.Title,
+					EventURL:       "https://polymarket.com/event/" + pe.Slug,
+					Description:    pe.Description,
+					Category:       primaryCategory,
+					Subcategory:    pe.Subcategory,
+					YesProbability: yesProb,
+					NoProbability:  noProb,
+					Volume24hr:     marketVolume24hr,
+					Volume1wk:      marketVolume1wk,
+					Volume1mo:      marketVolume1mo,
+					Liquidity:      pe.Liquidity,
+					Active:         pe.Active && !pe.Closed,
+					LastUpdated:    now,
+					CreatedAt:      now,
+				}
+
+				allEvents = append(allEvents, event)
 			}
 		}
 
-		// Process each market individually
-		// An event can have multiple markets, and we track each one separately
-		for _, market := range pe.Markets {
-			yesProb, noProb, err := parseMarketProbabilities(market)
-			if err != nil {
-				continue // Skip invalid markets
-			}
+		// Stop if we got fewer than pageSize (last page)
+		if len(pmEvents) < pageSize {
+			break
+		}
 
-			// Skip markets with no valid probability data
-			if yesProb == 0 && noProb == 0 {
-				continue
-			}
-
-			// Capture current time once to ensure CreatedAt <= LastUpdated
-			now := time.Now()
-
-			// Always use composite ID format for consistency
-			// This prevents data loss when events transition from single to multi-market
-			compositeID := pe.ID + ":" + market.ID
-
-			event := models.Event{
-				ID:             compositeID,
-				EventID:        pe.ID,
-				MarketID:       market.ID,
-				MarketQuestion: market.Question,
-				Title:          pe.Title,
-				EventURL:       "https://polymarket.com/event/" + pe.Slug,
-				Description:    pe.Description,
-				Category:       primaryCategory,
-				Subcategory:    pe.Subcategory,
-				YesProbability: yesProb,
-				NoProbability:  noProb,
-				Volume24hr:     pe.Volume24hr,
-				Volume1wk:      pe.Volume1wk,
-				Volume1mo:      pe.Volume1mo,
-				Liquidity:      pe.Liquidity,
-				Active:         pe.Active && !pe.Closed,
-				LastUpdated:    now,
-				CreatedAt:      now,
-			}
-
-			events = append(events, event)
+		// Stop if we have enough events
+		if len(allEvents) >= maxFetch {
+			break
 		}
 	}
 
 	// Return top K after filtering
-	if len(events) > limit {
-		events = events[:limit]
+	if len(allEvents) > limit {
+		allEvents = allEvents[:limit]
 	}
 
-	return events, nil
+	return allEvents, nil
 }
 
 // parseMarketProbabilities extracts Yes/No probabilities from a market
@@ -308,15 +347,10 @@ func parseMarketProbabilities(market PolymarketMarket) (float64, float64, error)
 	return yesProb, noProb, nil
 }
 
-// containsJSON checks if a content-type string contains json
+// containsJSON checks if a content-type header indicates JSON
 func containsJSON(contentType string) bool {
-	if len(contentType) == 16 && contentType == "application/json" {
-		return true
-	}
-	if len(contentType) >= 17 && contentType[:17] == "application/json;" {
-		return true
-	}
-	return false
+	return contentType == "application/json" ||
+		strings.HasPrefix(contentType, "application/json;")
 }
 
 // doRequest performs HTTP request with retry logic

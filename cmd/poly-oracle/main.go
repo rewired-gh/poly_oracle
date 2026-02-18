@@ -19,9 +19,7 @@ import (
 	"github.com/poly-oracle/internal/telegram"
 )
 
-var (
-	configPath = flag.String("config", "configs/config.yaml", "Path to configuration file")
-)
+var configPath = flag.String("config", "configs/config.yaml", "Path to configuration file")
 
 func main() {
 	flag.Parse()
@@ -100,10 +98,12 @@ func main() {
 	}()
 
 	// Start monitoring loop
-	logger.Info("Starting monitoring service (poll: %v, threshold: %.2f, window: %v, top_k: %d)",
+	effectiveWindow := time.Duration(cfg.Monitor.DetectionIntervals+1) * cfg.Polymarket.PollInterval
+	logger.Info("Starting monitoring service (interval: %v, detection_intervals: %d, effective_window: %v, sensitivity: %.2f, top_k: %d)",
 		cfg.Polymarket.PollInterval,
-		cfg.Monitor.Threshold,
-		cfg.Monitor.Window,
+		cfg.Monitor.DetectionIntervals,
+		effectiveWindow,
+		cfg.Monitor.Sensitivity,
 		cfg.Monitor.TopK,
 	)
 	logger.Debug("Monitoring configuration: categories=%v, volume_24hr_min=%.0f, volume_filter_or=%v",
@@ -115,12 +115,9 @@ func main() {
 	ticker := time.NewTicker(cfg.Polymarket.PollInterval)
 	defer ticker.Stop()
 
-	persistenceTicker := time.NewTicker(cfg.Storage.PersistenceInterval)
-	defer persistenceTicker.Stop()
-
 	// Run initial poll immediately
 	logger.Debug("Running initial monitoring cycle")
-	if err := runMonitoringCycle(ctx, polyClient, mon, store, telegramClient, cfg); err != nil {
+	if err := runMonitoringCycle(ctx, polyClient, mon, store, telegramClient, cfg, time.Now()); err != nil {
 		logger.Error("Monitoring cycle failed: %v", err)
 	}
 
@@ -136,33 +133,16 @@ func main() {
 			logger.Info("Service stopped")
 			return
 
-		case <-ticker.C:
+		case tickTime := <-ticker.C:
 			logger.Debug("Starting scheduled monitoring cycle")
-			if err := runMonitoringCycle(ctx, polyClient, mon, store, telegramClient, cfg); err != nil {
+			if err := runMonitoringCycle(ctx, polyClient, mon, store, telegramClient, cfg, tickTime); err != nil {
 				logger.Error("Monitoring cycle failed: %v", err)
 			}
 
-		case <-persistenceTicker.C:
-			// Retry persistence with exponential backoff
-			var saveErr error
-			for attempt := 0; attempt <= cfg.Storage.PersistenceRetries; attempt++ {
-				if err := store.Save(); err == nil {
-					logger.Debug("Data persisted successfully")
-					saveErr = nil
-					break
-				} else {
-					saveErr = err
-					if attempt < cfg.Storage.PersistenceRetries {
-						delay := cfg.Storage.PersistenceRetryDelay * time.Duration(attempt+1)
-						logger.Warn("Persistence attempt %d/%d failed: %v (retrying in %v)",
-							attempt+1, cfg.Storage.PersistenceRetries+1, err, delay)
-						time.Sleep(delay)
-					}
-				}
-			}
-			if saveErr != nil {
+			// Persist data after each cycle
+			if err := persistWithRetry(store, cfg.Storage.PersistenceRetries, cfg.Storage.PersistenceRetryDelay); err != nil {
 				logger.Error("Failed to persist after %d attempts: %v",
-					cfg.Storage.PersistenceRetries+1, saveErr)
+					cfg.Storage.PersistenceRetries+1, err)
 			}
 
 			// Rotate old data
@@ -183,6 +163,7 @@ func runMonitoringCycle(
 	store *storage.Storage,
 	telegramClient *telegram.Client,
 	cfg *config.Config,
+	cycleTime time.Time, // tick time (or startup time for the initial cycle)
 ) error {
 	startTime := time.Now()
 	logger.Info("Starting monitoring cycle")
@@ -229,13 +210,16 @@ func runMonitoringCycle(
 			updatedEvents++
 		}
 
-		// Create snapshot for current probability
+		// Create snapshot for current probability.
+		// Use cycleTime (tick time) as the timestamp, not time.Now() after processing.
+		// This ensures snapshot ages are exact multiples of pollInterval, so the
+		// detection window math is not skewed by per-cycle processing latency.
 		snapshot := &models.Snapshot{
 			ID:             generateID(),
 			EventID:        event.ID,
 			YesProbability: event.YesProbability,
 			NoProbability:  event.NoProbability,
-			Timestamp:      time.Now(),
+			Timestamp:      cycleTime,
 			Source:         "polymarket-gamma-api",
 		}
 
@@ -250,9 +234,15 @@ func runMonitoringCycle(
 	if err != nil {
 		return fmt.Errorf("failed to get events: %w", err)
 	}
-	logger.Debug("Detecting changes across %d total events with threshold %.2f", len(allEvents), cfg.Monitor.Threshold)
-
-	changes, detectionErrors, err := mon.DetectChanges(convertEvents(allEvents), cfg.Monitor.Threshold, cfg.Monitor.Window)
+	// Window = (N+1) × pollInterval, not N × pollInterval.
+	// With cycleTime-stamped snapshots, the oldest snapshot from N cycles ago is
+	// exactly N×pollInterval old at tick time, but GetSnapshotsInWindow runs after
+	// processing completes (tick + τ), making it N×pollInterval + τ old. The extra
+	// interval absorbs τ so the boundary snapshot is never accidentally excluded.
+	detectionWindow := time.Duration(cfg.Monitor.DetectionIntervals+1) * cfg.Polymarket.PollInterval
+	logger.Debug("Detecting changes across %d total events (window: %v = (%d+1) × %v)",
+		len(allEvents), detectionWindow, cfg.Monitor.DetectionIntervals, cfg.Polymarket.PollInterval)
+	changes, detectionErrors, err := mon.DetectChanges(convertMarkets(allEvents), detectionWindow)
 	if err != nil {
 		return fmt.Errorf("failed to detect changes: %w", err)
 	}
@@ -270,20 +260,40 @@ func runMonitoringCycle(
 		}
 	}
 
-	logger.Info("Detected %d significant changes", len(changes))
+	logger.Info("Detected %d changes above floor", len(changes))
 
-	// Get top K changes and send notifications
-	if len(changes) > 0 && cfg.Telegram.Enabled && telegramClient != nil {
-		topChanges := mon.RankChanges(changes, cfg.Monitor.TopK)
-		logger.Debug("Ranked changes, sending top %d to Telegram", len(topChanges))
+	// Score and rank changes using composite signal quality.
+	// The four factors (KL, volume, SNR, trajectory) are already window-agnostic:
+	// SNR normalizes netChange by historical per-interval volatility, so scaling
+	// minScore by window duration is incorrect and creates a near-zero bar at 15m.
+	minScore := cfg.Monitor.MinCompositeScore()
+	marketsMap := buildMarketsMap(allEvents)
+	topGroups := mon.ScoreAndRank(changes, marketsMap, minScore, cfg.Monitor.TopK, cfg.Polymarket.Volume24hrMin, cfg.Monitor.MinAbsChange, cfg.Monitor.MinBaseProb)
 
-		if err := telegramClient.Send(topChanges); err != nil {
-			logger.Error("Failed to send Telegram notification: %v", err)
-		} else {
-			logger.Info("Sent Telegram notification with top %d changes", len(topChanges))
+	// Suppress recently-sent markets (same direction, within cooldown window)
+	topGroups = mon.FilterRecentlySent(topGroups, detectionWindow)
+
+	if len(topGroups) > 0 {
+		totalMarkets := 0
+		for _, g := range topGroups {
+			totalMarkets += len(g.Markets)
 		}
-	} else if len(changes) > 0 {
-		logger.Debug("Changes detected but Telegram notifications disabled or client not initialized")
+		logger.Info("Scored changes: %d detected, %d groups (%d markets) passed quality bar (min_score=%.4f)",
+			len(changes), len(topGroups), totalMarkets, minScore)
+
+		if cfg.Telegram.Enabled && telegramClient != nil {
+			logger.Debug("Sending top %d event groups to Telegram", len(topGroups))
+			if err := telegramClient.Send(topGroups); err != nil {
+				logger.Error("Failed to send Telegram notification: %v", err)
+			} else {
+				logger.Info("Sent Telegram notification with top %d event groups", len(topGroups))
+				mon.RecordNotified(topGroups)
+			}
+		} else {
+			logger.Debug("Changes detected but Telegram notifications disabled or client not initialized")
+		}
+	} else {
+		logger.Info("No changes above quality bar this cycle (min_score=%.4f)", minScore)
 	}
 
 	duration := time.Since(startTime)
@@ -292,14 +302,41 @@ func runMonitoringCycle(
 	return nil
 }
 
+func persistWithRetry(store *storage.Storage, maxRetries int, retryDelay time.Duration) error {
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if err := store.Save(); err == nil {
+			logger.Debug("Data persisted successfully")
+			return nil
+		} else {
+			lastErr = err
+			if attempt < maxRetries {
+				delay := retryDelay * time.Duration(attempt+1)
+				logger.Warn("Persistence attempt %d/%d failed: %v (retrying in %v)",
+					attempt+1, maxRetries+1, err, delay)
+				time.Sleep(delay)
+			}
+		}
+	}
+	return lastErr
+}
+
 func generateID() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
-func convertEvents(events []*models.Event) []models.Event {
-	result := make([]models.Event, len(events))
-	for i, event := range events {
-		result[i] = *event
+func convertMarkets(markets []*models.Market) []models.Market {
+	result := make([]models.Market, len(markets))
+	for i, market := range markets {
+		result[i] = *market
+	}
+	return result
+}
+
+func buildMarketsMap(markets []*models.Market) map[string]*models.Market {
+	result := make(map[string]*models.Market, len(markets))
+	for _, market := range markets {
+		result[market.ID] = market
 	}
 	return result
 }

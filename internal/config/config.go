@@ -44,10 +44,18 @@ type PolymarketConfig struct {
 
 // MonitorConfig holds monitoring behavior configuration
 type MonitorConfig struct {
-	Threshold float64       `mapstructure:"threshold"`
-	Window    time.Duration `mapstructure:"window"`
-	TopK      int           `mapstructure:"top_k"`
-	Enabled   bool          `mapstructure:"enabled"`
+	Sensitivity        float64 `mapstructure:"sensitivity"`
+	TopK               int     `mapstructure:"top_k"`
+	Enabled            bool    `mapstructure:"enabled"`
+	DetectionIntervals int     `mapstructure:"detection_intervals"`
+	MinAbsChange       float64 `mapstructure:"min_abs_change"` // minimum absolute probability change (fraction, e.g. 0.03 = 3pp)
+	MinBaseProb        float64 `mapstructure:"min_base_prob"`  // minimum base probability (fraction, e.g. 0.05 = 5%)
+}
+
+// MinCompositeScore returns the minimum composite score floor derived from sensitivity.
+// Formula: sensitivity^2 × 0.05. At sensitivity=0.5 this yields 0.0125 (medium signals pass).
+func (m MonitorConfig) MinCompositeScore() float64 {
+	return m.Sensitivity * m.Sensitivity * 0.05
 }
 
 // TelegramConfig holds Telegram notification configuration
@@ -64,7 +72,6 @@ type StorageConfig struct {
 	MaxEvents             int           `mapstructure:"max_events"`
 	MaxSnapshotsPerEvent  int           `mapstructure:"max_snapshots_per_event"`
 	MaxFileSizeMB         int           `mapstructure:"max_file_size_mb"`
-	PersistenceInterval   time.Duration `mapstructure:"persistence_interval"`
 	PersistenceRetries    int           `mapstructure:"persistence_retries"`
 	PersistenceRetryDelay time.Duration `mapstructure:"persistence_retry_delay"`
 	FilePermissions       uint32        `mapstructure:"file_permissions"`
@@ -112,10 +119,12 @@ func Load(path string) (*Config, error) {
 	_ = v.BindEnv("polymarket.idle_conn_timeout", "POLY_ORACLE_POLYMARKET_IDLE_CONN_TIMEOUT")
 
 	// Monitor
-	_ = v.BindEnv("monitor.threshold", "POLY_ORACLE_MONITOR_THRESHOLD")
-	_ = v.BindEnv("monitor.window", "POLY_ORACLE_MONITOR_WINDOW")
+	_ = v.BindEnv("monitor.sensitivity", "POLY_ORACLE_MONITOR_SENSITIVITY")
 	_ = v.BindEnv("monitor.top_k", "POLY_ORACLE_MONITOR_TOP_K")
 	_ = v.BindEnv("monitor.enabled", "POLY_ORACLE_MONITOR_ENABLED")
+	_ = v.BindEnv("monitor.detection_intervals", "POLY_ORACLE_MONITOR_DETECTION_INTERVALS")
+	_ = v.BindEnv("monitor.min_abs_change", "POLY_ORACLE_MONITOR_MIN_ABS_CHANGE")
+	_ = v.BindEnv("monitor.min_base_prob", "POLY_ORACLE_MONITOR_MIN_BASE_PROB")
 
 	// Telegram
 	_ = v.BindEnv("telegram.bot_token", "POLY_ORACLE_TELEGRAM_BOT_TOKEN")
@@ -128,7 +137,6 @@ func Load(path string) (*Config, error) {
 	_ = v.BindEnv("storage.max_events", "POLY_ORACLE_STORAGE_MAX_EVENTS")
 	_ = v.BindEnv("storage.max_snapshots_per_event", "POLY_ORACLE_STORAGE_MAX_SNAPSHOTS_PER_EVENT")
 	_ = v.BindEnv("storage.max_file_size_mb", "POLY_ORACLE_STORAGE_MAX_FILE_SIZE_MB")
-	_ = v.BindEnv("storage.persistence_interval", "POLY_ORACLE_STORAGE_PERSISTENCE_INTERVAL")
 	_ = v.BindEnv("storage.persistence_retries", "POLY_ORACLE_STORAGE_PERSISTENCE_RETRIES")
 	_ = v.BindEnv("storage.persistence_retry_delay", "POLY_ORACLE_STORAGE_PERSISTENCE_RETRY_DELAY")
 	_ = v.BindEnv("storage.file_permissions", "POLY_ORACLE_STORAGE_FILE_PERMISSIONS")
@@ -167,7 +175,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("polymarket.volume_1wk_min", 100000.0) // $100K weekly
 	v.SetDefault("polymarket.volume_1mo_min", 250000.0) // $250K monthly
 	v.SetDefault("polymarket.volume_filter_or", true)   // true = OR (union)
-	v.SetDefault("polymarket.limit", 200)
+	v.SetDefault("polymarket.limit", 500)
 	v.SetDefault("polymarket.timeout", "30s")
 	v.SetDefault("polymarket.max_retries", 3)
 	v.SetDefault("polymarket.retry_delay_base", "1s")
@@ -176,27 +184,28 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("polymarket.idle_conn_timeout", "90s")
 
 	// Monitor defaults
-	v.SetDefault("monitor.threshold", 0.04) // 4% change (meaningful movements)
-	v.SetDefault("monitor.window", "1h")
-	v.SetDefault("monitor.top_k", 5) // Top 5 events (digestible)
+	v.SetDefault("monitor.sensitivity", 0.5) // medium quality bar
+	v.SetDefault("monitor.top_k", 5)         // Top 5 events (digestible)
 	v.SetDefault("monitor.enabled", true)
+	v.SetDefault("monitor.detection_intervals", 4) // 4 poll intervals for TC window
+	v.SetDefault("monitor.min_abs_change", 0.03)   // 3pp minimum absolute change
+	v.SetDefault("monitor.min_base_prob", 0.05)    // 5% minimum base probability
 
 	// Telegram defaults
 	v.SetDefault("telegram.enabled", false)
 	v.SetDefault("telegram.max_retries", 3)
 	v.SetDefault("telegram.retry_delay_base", "1s")
 
-	// Storage defaults
-	v.SetDefault("storage.max_events", 1000)
-	v.SetDefault("storage.max_snapshots_per_event", 24) // 24 hourly snapshots
-	v.SetDefault("storage.max_file_size_mb", 100)
-	v.SetDefault("storage.persistence_interval", "1h")    // Matches poll interval
-	v.SetDefault("storage.persistence_retries", 3)        // Retry 3 times on failure
-	v.SetDefault("storage.persistence_retry_delay", "5s") // 5 second base delay between retries
-	v.SetDefault("storage.file_permissions", 0600)        // Owner-only read/write for data files
-	v.SetDefault("storage.dir_permissions", 0700)         // Owner-only for data directory
-	v.SetDefault("storage.file_path", "")                 // Empty = OS tmp directory
-	v.SetDefault("storage.data_dir", "")                  // Empty = OS tmp directory
+	// Storage defaults (tuned for 4 GiB RAM / 128 GiB SSD)
+	v.SetDefault("storage.max_events", 10000)
+	v.SetDefault("storage.max_snapshots_per_event", 672) // 7 days of 15-min snapshots
+	v.SetDefault("storage.max_file_size_mb", 2048)       // 2 GB persistence file
+	v.SetDefault("storage.persistence_retries", 3)       // Retry 3 times on failure
+	v.SetDefault("storage.persistence_retry_delay", "5s")
+	v.SetDefault("storage.file_permissions", 0600)
+	v.SetDefault("storage.dir_permissions", 0700)
+	v.SetDefault("storage.file_path", "")
+	v.SetDefault("storage.data_dir", "")
 
 	// Logging defaults
 	v.SetDefault("logging.level", "info")
@@ -227,19 +236,25 @@ func (c *Config) Validate() error {
 	if c.Polymarket.Volume1moMin < 0 {
 		return fmt.Errorf("polymarket.volume_1mo_min must not be negative")
 	}
-	if c.Polymarket.Limit < 1 || c.Polymarket.Limit > 1000 {
-		return fmt.Errorf("polymarket.limit must be between 1 and 1000")
+	if c.Polymarket.Limit < 1 || c.Polymarket.Limit > 10000 {
+		return fmt.Errorf("polymarket.limit must be between 1 and 10000")
 	}
 
 	// Validate Monitor config
-	if c.Monitor.Threshold < 0.0 || c.Monitor.Threshold > 1.0 {
-		return fmt.Errorf("monitor.threshold must be between 0.0 and 1.0")
+	if c.Monitor.Sensitivity < 0.0 || c.Monitor.Sensitivity > 1.0 {
+		return fmt.Errorf("monitor.sensitivity must be between 0.0 and 1.0")
 	}
-	if c.Monitor.Window < 1*time.Minute {
-		return fmt.Errorf("monitor.window must be at least 1 minute")
+	if c.Monitor.TopK < 0 {
+		return fmt.Errorf("monitor.top_k must not be negative")
 	}
-	if c.Monitor.TopK < 1 {
-		return fmt.Errorf("monitor.top_k must be at least 1")
+	if c.Monitor.DetectionIntervals < 2 {
+		return fmt.Errorf("monitor.detection_intervals must be at least 2 (need ≥2 poll intervals for TC computation)")
+	}
+	if c.Monitor.MinAbsChange < 0.0 || c.Monitor.MinAbsChange > 1.0 {
+		return fmt.Errorf("monitor.min_abs_change must be between 0.0 and 1.0")
+	}
+	if c.Monitor.MinBaseProb < 0.0 || c.Monitor.MinBaseProb >= 0.5 {
+		return fmt.Errorf("monitor.min_base_prob must be in [0.0, 0.5)")
 	}
 
 	// Validate Telegram config
@@ -262,9 +277,6 @@ func (c *Config) Validate() error {
 	if c.Storage.MaxFileSizeMB < 1 {
 		return fmt.Errorf("storage.max_file_size_mb must be at least 1")
 	}
-	if c.Storage.PersistenceInterval < 1*time.Minute {
-		return fmt.Errorf("storage.persistence_interval must be at least 1 minute")
-	}
 	// FilePath can be empty - storage layer will use OS tmp directory
 
 	// Validate Logging config
@@ -278,29 +290,4 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
-}
-
-// GetPolymarketConfig returns the Polymarket configuration
-func (c *Config) GetPolymarketConfig() PolymarketConfig {
-	return c.Polymarket
-}
-
-// GetMonitorConfig returns the Monitor configuration
-func (c *Config) GetMonitorConfig() MonitorConfig {
-	return c.Monitor
-}
-
-// GetTelegramConfig returns the Telegram configuration
-func (c *Config) GetTelegramConfig() TelegramConfig {
-	return c.Telegram
-}
-
-// GetStorageConfig returns the Storage configuration
-func (c *Config) GetStorageConfig() StorageConfig {
-	return c.Storage
-}
-
-// GetLoggingConfig returns the Logging configuration
-func (c *Config) GetLoggingConfig() LoggingConfig {
-	return c.Logging
 }

@@ -3,22 +3,20 @@ package config
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 func TestLoadAndValidate(t *testing.T) {
 	// Create temp config file
 	content := `
 polymarket:
-  api_base_url: "https://gamma-api.polymarket.com"
   poll_interval: 5m
   categories:
     - politics
     - sports
-  timeout: 30s
 
 monitor:
-  threshold: 0.10
-  window: 1h
+  sensitivity: 0.5
   top_k: 10
   enabled: true
 
@@ -31,7 +29,6 @@ storage:
   max_events: 1000
   max_snapshots_per_event: 100
   max_file_size_mb: 100
-  persistence_interval: 5m
   file_path: "./data/test.json"
   data_dir: "./data"
 
@@ -59,12 +56,12 @@ logging:
 	}
 
 	// Verify values
-	if cfg.Polymarket.GammaAPIURL != "https://gamma-api.polymarket.com" {
-		t.Errorf("Unexpected API URL: %s", cfg.Polymarket.GammaAPIURL)
+	if cfg.Polymarket.PollInterval != 5*time.Minute {
+		t.Errorf("Unexpected poll interval: %v", cfg.Polymarket.PollInterval)
 	}
 
-	if cfg.Monitor.Threshold != 0.10 {
-		t.Errorf("Unexpected threshold: %f", cfg.Monitor.Threshold)
+	if cfg.Monitor.Sensitivity != 0.5 {
+		t.Errorf("Unexpected sensitivity: %f", cfg.Monitor.Sensitivity)
 	}
 
 	if len(cfg.Polymarket.Categories) != 2 {
@@ -88,13 +85,12 @@ func TestValidateErrors(t *testing.T) {
 			config: &Config{
 				Polymarket: PolymarketConfig{
 					GammaAPIURL:  "https://example.com",
-					PollInterval: 5 * 60 * 1000 * 1000 * 1000,
+					PollInterval: 5 * time.Minute,
 					Categories:   []string{"politics"},
 				},
 				Monitor: MonitorConfig{
-					Threshold: 0.10,
-					Window:    60 * 60 * 1000 * 1000 * 1000,
-					TopK:      10,
+					Sensitivity: 0.5,
+					TopK:        10,
 				},
 				Telegram: TelegramConfig{
 					Enabled: true,
@@ -104,7 +100,6 @@ func TestValidateErrors(t *testing.T) {
 					MaxEvents:            1000,
 					MaxSnapshotsPerEvent: 100,
 					MaxFileSizeMB:        100,
-					PersistenceInterval:  5 * 60 * 1000 * 1000 * 1000,
 					FilePath:             "./data/test.json",
 				},
 				Logging: LoggingConfig{
@@ -115,23 +110,21 @@ func TestValidateErrors(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "invalid threshold",
+			name: "invalid sensitivity",
 			config: &Config{
 				Polymarket: PolymarketConfig{
 					GammaAPIURL:  "https://example.com",
-					PollInterval: 5 * 60 * 1000 * 1000 * 1000,
+					PollInterval: 5 * time.Minute,
 					Categories:   []string{"politics"},
 				},
 				Monitor: MonitorConfig{
-					Threshold: 1.5, // Invalid
-					Window:    60 * 60 * 1000 * 1000 * 1000,
-					TopK:      10,
+					Sensitivity: 1.5, // Invalid: > 1.0
+					TopK:        10,
 				},
 				Storage: StorageConfig{
 					MaxEvents:            1000,
 					MaxSnapshotsPerEvent: 100,
 					MaxFileSizeMB:        100,
-					PersistenceInterval:  5 * 60 * 1000 * 1000 * 1000,
 					FilePath:             "./data/test.json",
 				},
 				Logging: LoggingConfig{
