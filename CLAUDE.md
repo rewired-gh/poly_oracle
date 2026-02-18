@@ -1,24 +1,21 @@
 # poly_oracle Development Guidelines
 
-Auto-generated from all feature plans. Last updated: 2026-02-16
-
-## Active Technologies
-- Go 1.24+ (latest stable) + None new. `math` stdlib for `math.Log`, `math.Sqrt`, `math.Abs`. (001-smart-ranking)
-- Existing in-memory + JSON persistence. `storage.GetSnapshots(eventID)` (already (001-smart-ranking)
-
-- Go 1.24+ (latest stable) (001-probability-monitor)
-
 ## Project Structure
 
 ```text
 cmd/poly-oracle/        # Application entry point (main.go)
 internal/               # Private application code
   ├── config/          # Configuration loading and validation
+  ├── logger/          # Structured logging (debug/info/warn/error/fatal)
   ├── models/          # Domain entities (Event, Snapshot, Change)
   ├── polymarket/      # Polymarket API client (Gamma + CLOB APIs)
-  ├── monitor/         # Change detection logic
+  ├── monitor/         # Change detection and composite scoring
   ├── storage/         # In-memory storage with file persistence
   └── telegram/        # Telegram bot client
+pkg/api/               # Public API types (placeholder)
+tests/                 # Integration tests and testdata
+docs/                  # Configuration tuning results, valid categories reference
+specs/                 # Feature specification plans
 configs/               # YAML configuration files
 deployments/           # Dockerfile & systemd service
 bin/                   # Built binaries
@@ -37,12 +34,8 @@ make fmt               # Format code with gofmt
 make lint              # Run golangci-lint
 make dev               # Development mode with auto-reload (requires entr)
 
-# Analysis tools (for configuration optimization)
-go run ./cmd/experiment         # Analyze categories, volume distribution, probability changes
-go run ./cmd/analyze-categories # Category-specific volume and activity analysis
-go run ./cmd/analyze-refined    # Refined analysis with optimized thresholds
-
 # Deployment
+make generate-config   # Generate example config from running binary
 make docker-build      # Build Docker image
 make docker-run        # Run Docker container
 
@@ -64,7 +57,7 @@ Single binary service with polling architecture:
 2. **Monitor Service** → Orchestrates polling cycles
 3. **Polymarket Client** → Fetches events from Gamma API + CLOB API
 4. **Storage** → In-memory with file-based persistence (data rotation)
-5. **Change Detection** → Threshold-based algorithm (configurable)
+5. **Change Detection** → Four-factor composite scoring: KL divergence × log-volume weight × historical SNR × trajectory consistency; results ranked via `ScoreAndRank`
 6. **Telegram Client** → Sends notifications for top K changes
 
 Data flow: Poll → Store → Detect Changes → Notify → Persist
@@ -138,8 +131,10 @@ make run
 - `cmd/poly-oracle/main.go` - Entry point, orchestration
 - `configs/config.yaml` - User configuration (gitignored, copy from example)
 - `configs/config.yaml.example` - Template with sensible defaults
+- `configs/config.test.yaml` - Test-time config overrides (modify for local testing)
 - `internal/config/config.go` - Config loading & validation
-- `internal/monitor/monitor.go` - Change detection algorithm
+- `internal/logger/logger.go` - Structured logger (init with `logger.Init(level, format)`)
+- `internal/monitor/monitor.go` - Composite scoring and ranking algorithm
 
 ## Gotchas
 
@@ -174,12 +169,7 @@ Each market is monitored separately for probability changes.
 
 ## Code Style
 
-Go 1.24+ (latest stable): Follow standard conventions
-
-## Recent Changes
-- 001-smart-ranking: Added Go 1.24+ (latest stable) + None new. `math` stdlib for `math.Log`, `math.Sqrt`, `math.Abs`.
-
-- 001-probability-monitor: Added Go 1.24+ (latest stable)
+Go 1.24+ (latest stable): Follow standard Go conventions
 
 <!-- MANUAL ADDITIONS START -->
 <!-- MANUAL ADDITIONS END -->

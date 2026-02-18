@@ -19,9 +19,7 @@ import (
 	"github.com/poly-oracle/internal/telegram"
 )
 
-var (
-	configPath = flag.String("config", "configs/config.yaml", "Path to configuration file")
-)
+var configPath = flag.String("config", "configs/config.yaml", "Path to configuration file")
 
 func main() {
 	flag.Parse()
@@ -142,25 +140,9 @@ func main() {
 			}
 
 			// Persist data after each cycle
-			var saveErr error
-			for attempt := 0; attempt <= cfg.Storage.PersistenceRetries; attempt++ {
-				if err := store.Save(); err == nil {
-					logger.Debug("Data persisted successfully")
-					saveErr = nil
-					break
-				} else {
-					saveErr = err
-					if attempt < cfg.Storage.PersistenceRetries {
-						delay := cfg.Storage.PersistenceRetryDelay * time.Duration(attempt+1)
-						logger.Warn("Persistence attempt %d/%d failed: %v (retrying in %v)",
-							attempt+1, cfg.Storage.PersistenceRetries+1, err, delay)
-						time.Sleep(delay)
-					}
-				}
-			}
-			if saveErr != nil {
+			if err := persistWithRetry(store, cfg.Storage.PersistenceRetries, cfg.Storage.PersistenceRetryDelay); err != nil {
 				logger.Error("Failed to persist after %d attempts: %v",
-					cfg.Storage.PersistenceRetries+1, saveErr)
+					cfg.Storage.PersistenceRetries+1, err)
 			}
 
 			// Rotate old data
@@ -318,6 +300,25 @@ func runMonitoringCycle(
 	logger.Info("Monitoring cycle completed in %v", duration)
 
 	return nil
+}
+
+func persistWithRetry(store *storage.Storage, maxRetries int, retryDelay time.Duration) error {
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if err := store.Save(); err == nil {
+			logger.Debug("Data persisted successfully")
+			return nil
+		} else {
+			lastErr = err
+			if attempt < maxRetries {
+				delay := retryDelay * time.Duration(attempt+1)
+				logger.Warn("Persistence attempt %d/%d failed: %v (retrying in %v)",
+					attempt+1, maxRetries+1, err, delay)
+				time.Sleep(delay)
+			}
+		}
+	}
+	return lastErr
 }
 
 func generateID() string {

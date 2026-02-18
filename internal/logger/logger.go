@@ -99,8 +99,8 @@ func Fatal(format string, args ...interface{}) {
 	msg := fmt.Sprintf("[FATAL] "+format, args...)
 	if defaultLogger != nil {
 		_ = defaultLogger.logger.Output(2, msg)
-	} else {
-		log.Fatal(msg)
 	}
+	// Use os.Exit directly instead of log.Fatal to avoid double-logging.
+	// The message has already been written to defaultLogger above.
 	os.Exit(1)
 }

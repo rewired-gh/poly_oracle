@@ -25,7 +25,7 @@ monitor:
   #   0.5 → minScore=0.0125  — stricter; only strong moves on high-volume markets pass
   #   0.7 → minScore=0.0245  — additional bar for any moves not caught by min_abs_change/min_base_prob
   #
-  sensitivity: 0.7
+  sensitivity: 0.4
   top_k: 10
 
   # detection_intervals: number of poll_interval periods in the detection window.
@@ -45,7 +45,7 @@ monitor:
   # Filters: Juan Branco 1.2%→2.6% (1.3pp), US-Iran specific dates (0.6–0.9pp),
   #          Threads 0.1%→0.9% (0.8pp), US-Iran by-date 2pp moves.
   # Keeps: Pizza Hut 29.5%→21.0% (8.5pp), SHEIN 7pp, Grok 9.4pp.
-  min_abs_change: 0.03
+  min_abs_change: 0.05
 
   # min_base_prob: minimum base (old) probability (fraction, e.g. 0.05 = 5%).
   # Filters: Juan Branco (base=1.2%), US-Iran specific dates (base=0.9–1.6%),

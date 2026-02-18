@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/poly-oracle/internal/models"
@@ -346,15 +347,10 @@ func parseMarketProbabilities(market PolymarketMarket) (float64, float64, error)
 	return yesProb, noProb, nil
 }
 
-// containsJSON checks if a content-type string contains json
+// containsJSON checks if a content-type header indicates JSON
 func containsJSON(contentType string) bool {
-	if len(contentType) == 16 && contentType == "application/json" {
-		return true
-	}
-	if len(contentType) >= 17 && contentType[:17] == "application/json;" {
-		return true
-	}
-	return false
+	return contentType == "application/json" ||
+		strings.HasPrefix(contentType, "application/json;")
 }
 
 // doRequest performs HTTP request with retry logic

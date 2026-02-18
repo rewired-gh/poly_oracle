@@ -172,11 +172,13 @@ func HistoricalSNR(allSnapshots []models.Snapshot, netChange float64) float64 {
 		return 1.0
 	}
 
-	deltas := make([]float64, 0, len(allSnapshots)-1)
+	deltas := make([]float64, len(allSnapshots)-1)
 	for i := 1; i < len(allSnapshots); i++ {
-		deltas = append(deltas, allSnapshots[i].YesProbability-allSnapshots[i-1].YesProbability)
+		deltas[i-1] = allSnapshots[i].YesProbability - allSnapshots[i-1].YesProbability
 	}
-	if len(deltas) == 0 {
+
+	// Need at least 2 deltas for Bessel-corrected std dev (divide by n-1)
+	if len(deltas) < 2 {
 		return 1.0
 	}
 
@@ -186,11 +188,6 @@ func HistoricalSNR(allSnapshots []models.Snapshot, netChange float64) float64 {
 		sum += d
 	}
 	mean := sum / float64(len(deltas))
-
-	// Sample std dev (Bessel correction: divide by n-1)
-	if len(deltas) < 2 {
-		return 1.0
-	}
 	var variance float64
 	for _, d := range deltas {
 		diff := d - mean
@@ -239,7 +236,7 @@ func CompositeScore(kl, vw, snr, tc float64) float64 {
 // sorted by SignalScore descending. Insertion order of groups is preserved.
 func groupByEvent(changes []models.Change) []models.Event {
 	groupMap := make(map[string]*models.Event)
-	order := []string{}
+	var order []string
 
 	for _, change := range changes {
 		id := change.OriginalEventID

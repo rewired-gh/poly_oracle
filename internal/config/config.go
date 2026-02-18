@@ -291,28 +291,3 @@ func (c *Config) Validate() error {
 
 	return nil
 }
-
-// GetPolymarketConfig returns the Polymarket configuration
-func (c *Config) GetPolymarketConfig() PolymarketConfig {
-	return c.Polymarket
-}
-
-// GetMonitorConfig returns the Monitor configuration
-func (c *Config) GetMonitorConfig() MonitorConfig {
-	return c.Monitor
-}
-
-// GetTelegramConfig returns the Telegram configuration
-func (c *Config) GetTelegramConfig() TelegramConfig {
-	return c.Telegram
-}
-
-// GetStorageConfig returns the Storage configuration
-func (c *Config) GetStorageConfig() StorageConfig {
-	return c.Storage
-}
-
-// GetLoggingConfig returns the Logging configuration
-func (c *Config) GetLoggingConfig() LoggingConfig {
-	return c.Logging
-}

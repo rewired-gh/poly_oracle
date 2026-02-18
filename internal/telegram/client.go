@@ -9,6 +9,7 @@ package telegram
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -127,37 +128,25 @@ func (c *Client) formatMessage(groups []models.Event) string {
 	return message
 }
 
-// escapeMarkdownV2 escapes special characters for Telegram MarkdownV2
+// escapeMarkdownV2 escapes special characters for Telegram MarkdownV2.
+// Characters that need escaping: _ * [ ] ( ) ~ ` > # + - = | { } . !
 func escapeMarkdownV2(text string) string {
-	// Characters that need escaping in MarkdownV2:
-	// _ * [ ] ( ) ~ ` > # + - = | { } . !
-	// Note: We escape all of them with \ prefix
-
-	result := ""
+	var b strings.Builder
+	b.Grow(len(text) + len(text)/4) // pre-allocate with room for escapes
 	for _, char := range text {
 		switch char {
 		case '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!':
-			result += "\\" + string(char)
-		default:
-			result += string(char)
+			b.WriteByte('\\')
 		}
+		b.WriteRune(char)
 	}
-	return result
+	return b.String()
 }
 
 // formatDuration formats a duration in a human-readable way
 func formatDuration(d time.Duration) string {
-	hours := int(d.Hours())
-	if hours == 1 {
+	if hours := int(d.Hours()); hours >= 1 {
 		return fmt.Sprintf("%dh", hours)
 	}
-	if hours > 1 {
-		return fmt.Sprintf("%dh", hours)
-	}
-
-	mins := int(d.Minutes())
-	if mins == 1 {
-		return fmt.Sprintf("%dm", mins)
-	}
-	return fmt.Sprintf("%dm", mins)
+	return fmt.Sprintf("%dm", int(d.Minutes()))
 }
