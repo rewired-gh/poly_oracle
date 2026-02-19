@@ -26,7 +26,8 @@ bin/                   # Built binaries
 ```bash
 # Development
 make install           # Install dependencies (go mod download)
-make build             # Build binary to bin/polyoracle
+make build             # Build binary to bin/polyoracle (native)
+make build-linux       # Cross-compile for Linux x86_64 → bin/polyoracle-linux-amd64
 make test              # Run all tests
 make test-coverage     # Run tests with coverage
 make run               # Build and run with configs/config.yaml
@@ -48,6 +49,7 @@ make clean             # Remove binaries and data directory
 - **Viper** (github.com/spf13/viper) - YAML configuration management
 - **Telegram Bot API** (github.com/go-telegram-bot-api/telegram-bot-api/v5) - Telegram notifications
 - **UUID** (github.com/google/uuid) - Unique identifier generation
+- **modernc.org/sqlite** - Pure-Go SQLite driver (no CGO required)
 
 ## Architecture
 
@@ -56,7 +58,7 @@ Single binary service with polling architecture:
 1. **Config Loader** → Reads YAML from `configs/config.yaml`
 2. **Monitor Service** → Orchestrates polling cycles
 3. **Polymarket Client** → Fetches events from Gamma API + CLOB API
-4. **Storage** → In-memory with file-based persistence (data rotation)
+4. **Storage** → SQLite-backed persistence via `modernc.org/sqlite` (no CGO); WAL mode
 5. **Change Detection** → Four-factor composite scoring: KL divergence × log-volume weight × historical SNR × trajectory consistency; results ranked via `ScoreAndRank`
 6. **Telegram Client** → Sends notifications for top K changes
 
@@ -82,6 +84,11 @@ Config file must have:
 - `polymarket.categories` - At least one category to monitor
 
 Environment variable overrides supported: `POLY_ORACLE_*`
+
+**Storage** (`storage.*` in config):
+- `max_events` — max markets tracked; oldest evicted inline on `AddMarket` (default 10000)
+- `max_snapshots_per_event` — max snapshots per market kept by `RotateSnapshots` (default 672)
+- `db_path` — SQLite DB file path (default `$TMPDIR/polyoracle/data.db`); env `POLY_ORACLE_STORAGE_DB_PATH`
 
 **Logging**: Configure verbosity via `logging.level` (debug/info/warn/error) and `logging.format` (json/text) in config.yaml. Use `debug` level for troubleshooting.
 
@@ -140,7 +147,7 @@ make run
 
 - **Config file required**: Service fails without valid config.yaml
 - **Telegram credentials**: Must be set before running
-- **Storage path**: Default uses OS tmp dir (/tmp/polyoracle/data.json)
+- **Storage path**: Default uses OS tmp dir (`$TMPDIR/polyoracle/data.db`)
 - **Categories filter**: Only monitors events in configured categories
 - **Volume filter**: Lower thresholds needed for niche categories (geopolitics/tech/finance)
 - **Telegram MarkdownV2**: Notification messages use MarkdownV2 format with automatic escaping of special characters

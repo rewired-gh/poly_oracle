@@ -40,20 +40,19 @@ func main() {
 	logger.Info("Configuration loaded from %s", *configPath)
 
 	// Initialize storage
-	store := storage.New(
+	store, err := storage.New(
 		cfg.Storage.MaxEvents,
 		cfg.Storage.MaxSnapshotsPerEvent,
-		cfg.Storage.FilePath,
-		os.FileMode(cfg.Storage.FilePermissions),
-		os.FileMode(cfg.Storage.DirPermissions),
+		cfg.Storage.DBPath,
 	)
-
-	// Load persisted data
-	if err := store.Load(); err != nil {
-		logger.Warn("Failed to load persisted data: %v", err)
-	} else {
-		logger.Debug("Successfully loaded persisted data from storage")
+	if err != nil {
+		logger.Fatal("Failed to initialize storage: %v", err)
 	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			logger.Error("Failed to close storage: %v", err)
+		}
+	}()
 
 	// Initialize Polymarket client
 	polyClient := polymarket.NewClient(
@@ -124,12 +123,6 @@ func main() {
 	for {
 		select {
 		case <-ctx.Done():
-			// Save state before shutdown
-			if err := store.Save(); err != nil {
-				logger.Error("Failed to save state: %v", err)
-			} else {
-				logger.Info("State saved successfully before shutdown")
-			}
 			logger.Info("Service stopped")
 			return
 
@@ -139,18 +132,12 @@ func main() {
 				logger.Error("Monitoring cycle failed: %v", err)
 			}
 
-			// Persist data after each cycle
-			if err := persistWithRetry(store, cfg.Storage.PersistenceRetries, cfg.Storage.PersistenceRetryDelay); err != nil {
-				logger.Error("Failed to persist after %d attempts: %v",
-					cfg.Storage.PersistenceRetries+1, err)
-			}
-
 			// Rotate old data
 			if err := store.RotateSnapshots(); err != nil {
 				logger.Warn("Failed to rotate snapshots: %v", err)
 			}
-			if err := store.RotateEvents(); err != nil {
-				logger.Warn("Failed to rotate events: %v", err)
+			if err := store.RotateMarkets(); err != nil {
+				logger.Warn("Failed to rotate markets: %v", err)
 			}
 		}
 	}
@@ -192,10 +179,10 @@ func runMonitoringCycle(
 		event := &events[i]
 
 		// Add or update event
-		existingEvent, err := store.GetEvent(event.ID)
+		existingEvent, err := store.GetMarket(event.ID)
 		if err != nil {
 			// Event doesn't exist, create it
-			if err := store.AddEvent(event); err != nil {
+			if err := store.AddMarket(event); err != nil {
 				logger.Warn("Failed to add event %s: %v", event.ID, err)
 				continue
 			}
@@ -203,7 +190,7 @@ func runMonitoringCycle(
 		} else {
 			// Update existing event
 			event.CreatedAt = existingEvent.CreatedAt
-			if err := store.UpdateEvent(event); err != nil {
+			if err := store.UpdateMarket(event); err != nil {
 				logger.Warn("Failed to update event %s: %v", event.ID, err)
 				continue
 			}
@@ -230,7 +217,7 @@ func runMonitoringCycle(
 	logger.Debug("Event processing complete: %d new, %d updated", newEvents, updatedEvents)
 
 	// Detect significant changes
-	allEvents, err := store.GetAllEvents()
+	allEvents, err := store.GetAllMarkets()
 	if err != nil {
 		return fmt.Errorf("failed to get events: %w", err)
 	}
@@ -300,25 +287,6 @@ func runMonitoringCycle(
 	logger.Info("Monitoring cycle completed in %v", duration)
 
 	return nil
-}
-
-func persistWithRetry(store *storage.Storage, maxRetries int, retryDelay time.Duration) error {
-	var lastErr error
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if err := store.Save(); err == nil {
-			logger.Debug("Data persisted successfully")
-			return nil
-		} else {
-			lastErr = err
-			if attempt < maxRetries {
-				delay := retryDelay * time.Duration(attempt+1)
-				logger.Warn("Persistence attempt %d/%d failed: %v (retrying in %v)",
-					attempt+1, maxRetries+1, err, delay)
-				time.Sleep(delay)
-			}
-		}
-	}
-	return lastErr
 }
 
 func generateID() string {

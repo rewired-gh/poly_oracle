@@ -1,4 +1,4 @@
-.PHONY: build test run clean docker-build install
+.PHONY: build build-linux test run clean docker-build install
 
 # Binary name
 BINARY_NAME=polyoracle
@@ -12,9 +12,13 @@ GOTEST=$(GOCMD) test
 GOGET=$(GOCMD) get
 GOMOD=$(GOCMD) mod
 
-# Build the binary
+# Build the binary (native)
 build:
 	$(GOBUILD) -o $(BINARY_PATH) ./cmd/$(BINARY_NAME)
+
+# Build for Linux x86_64
+build-linux:
+	GOOS=linux GOARCH=amd64 $(GOBUILD) -o $(BINARY_PATH)-linux-amd64 ./cmd/$(BINARY_NAME)
 
 # Run tests
 test:

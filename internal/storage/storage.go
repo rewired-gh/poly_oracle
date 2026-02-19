@@ -1,425 +1,438 @@
-// Package storage provides thread-safe in-memory storage with file-based persistence.
-// It manages markets, probability snapshots, and detected changes with automatic
-// data rotation to prevent unbounded memory growth.
-//
-// Storage is designed for reliability with atomic file writes and graceful
-// handling of persistence failures. Data is persisted to JSON files and can
-// be restored on application restart.
+// Package storage provides SQLite-backed persistence for markets, snapshots, and changes.
+// It uses modernc.org/sqlite (pure Go, no CGO) with WAL mode for concurrent reads.
 package storage
 
 import (
-	"encoding/json"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/rewired-gh/polyoracle/internal/models"
+	_ "modernc.org/sqlite"
 )
 
-// Storage provides thread-safe in-memory storage with file-based persistence
+// Storage wraps a SQLite database for all persistence operations.
 type Storage struct {
-	markets   map[string]*models.Market
-	snapshots map[string][]models.Snapshot
-	changes   []models.Change
-	mu        sync.RWMutex
-
-	// Configuration
+	db                   *sql.DB
 	maxMarkets           int
 	maxSnapshotsPerEvent int
-	filePath             string
-	filePermissions      os.FileMode
-	dirPermissions       os.FileMode
 }
 
-// PersistenceFile represents the file structure for JSON persistence
-type PersistenceFile struct {
-	Version   string                       `json:"version"`
-	SavedAt   time.Time                    `json:"saved_at"`
-	Markets   map[string]*models.Market    `json:"events"` // json tag kept as "events" for backwards compatibility
-	Snapshots map[string][]models.Snapshot `json:"snapshots"`
-}
-
-// New creates a new Storage instance with persistence to tmp directory
-// If filePath is empty, uses OS-appropriate tmp directory
-func New(maxMarkets, maxSnapshotsPerEvent int, filePath string, filePermissions, dirPermissions os.FileMode) *Storage {
-	// Use OS-appropriate tmp directory if no path provided
-	if filePath == "" {
-		filePath = filepath.Join(os.TempDir(), "polyoracle", "data.json")
+// New opens (or creates) the SQLite database at dbPath.
+// If dbPath is empty, defaults to $TMPDIR/polyoracle/data.db.
+func New(maxMarkets, maxSnapshotsPerEvent int, dbPath string) (*Storage, error) {
+	if dbPath == "" {
+		dbPath = filepath.Join(os.TempDir(), "polyoracle", "data.db")
 	}
-
-	return &Storage{
-		markets:              make(map[string]*models.Market),
-		snapshots:            make(map[string][]models.Snapshot),
-		changes:              make([]models.Change, 0),
-		maxMarkets:           maxMarkets,
-		maxSnapshotsPerEvent: maxSnapshotsPerEvent,
-		filePath:             filePath,
-		filePermissions:      filePermissions,
-		dirPermissions:       dirPermissions,
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create data directory: %w", err)
 	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+	// Single writer connection; WAL lets readers not block the writer.
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		return nil, fmt.Errorf("failed to set WAL mode: %w", err)
+	}
+	if _, err := db.Exec(`PRAGMA foreign_keys=ON`); err != nil {
+		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
+	}
+	s := &Storage{db: db, maxMarkets: maxMarkets, maxSnapshotsPerEvent: maxSnapshotsPerEvent}
+	if err := s.createTables(); err != nil {
+		return nil, fmt.Errorf("failed to create tables: %w", err)
+	}
+	return s, nil
 }
 
-// AddMarket adds a market to storage
+// Close closes the underlying database connection.
+func (s *Storage) Close() error {
+	return s.db.Close()
+}
+
+// Save is a no-op: SQLite writes are immediate.
+func (s *Storage) Save() error { return nil }
+
+// Load is a no-op: SQLite data is always present on open.
+func (s *Storage) Load() error { return nil }
+
+func (s *Storage) createTables() error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS markets (
+			id              TEXT PRIMARY KEY,
+			event_id        TEXT NOT NULL,
+			market_id       TEXT NOT NULL,
+			market_question TEXT,
+			title           TEXT NOT NULL,
+			event_url       TEXT,
+			description     TEXT,
+			category        TEXT NOT NULL,
+			subcategory     TEXT,
+			yes_prob        REAL NOT NULL,
+			no_prob         REAL NOT NULL,
+			volume_24hr     REAL,
+			volume_1wk      REAL,
+			volume_1mo      REAL,
+			liquidity       REAL,
+			active          INTEGER,
+			closed          INTEGER,
+			last_updated    INTEGER NOT NULL,
+			created_at      INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS snapshots (
+			id        TEXT PRIMARY KEY,
+			market_id TEXT NOT NULL REFERENCES markets(id) ON DELETE CASCADE,
+			yes_prob  REAL NOT NULL,
+			no_prob   REAL NOT NULL,
+			timestamp INTEGER NOT NULL,
+			source    TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_snapshots_market_ts ON snapshots(market_id, timestamp)`,
+		`CREATE TABLE IF NOT EXISTS changes (
+			id                   TEXT PRIMARY KEY,
+			market_id            TEXT NOT NULL,
+			original_event_id    TEXT,
+			event_title          TEXT,
+			event_url            TEXT,
+			polymarket_market_id TEXT,
+			market_question      TEXT,
+			magnitude            REAL NOT NULL,
+			direction            TEXT NOT NULL,
+			old_prob             REAL NOT NULL,
+			new_prob             REAL NOT NULL,
+			time_window          INTEGER NOT NULL,
+			detected_at          INTEGER NOT NULL,
+			notified             INTEGER DEFAULT 0,
+			signal_score         REAL DEFAULT 0
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_changes_detected_at ON changes(detected_at)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// --- Markets ---
+
 func (s *Storage) AddMarket(market *models.Market) error {
 	if err := market.Validate(); err != nil {
 		return fmt.Errorf("invalid market: %w", err)
 	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	_, err = tx.Exec(`
+		INSERT INTO markets
+			(id, event_id, market_id, market_question, title, event_url, description,
+			 category, subcategory, yes_prob, no_prob, volume_24hr, volume_1wk, volume_1mo,
+			 liquidity, active, closed, last_updated, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		market.ID, market.EventID, market.MarketID, market.MarketQuestion, market.Title,
+		market.EventURL, market.Description, market.Category, market.Subcategory,
+		market.YesProbability, market.NoProbability,
+		market.Volume24hr, market.Volume1wk, market.Volume1mo, market.Liquidity,
+		boolToInt(market.Active), boolToInt(market.Closed),
+		market.LastUpdated.UnixNano(), market.CreatedAt.UnixNano(),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to insert market: %w", err)
+	}
 
-	s.markets[market.ID] = market
-	return nil
+	// Evict oldest market(s) if we exceed the cap (cascades to snapshots).
+	if _, err = tx.Exec(`
+		DELETE FROM markets WHERE id NOT IN (
+			SELECT id FROM markets ORDER BY last_updated DESC LIMIT ?
+		)`, s.maxMarkets); err != nil {
+		return fmt.Errorf("failed to enforce market cap: %w", err)
+	}
+
+	return tx.Commit()
 }
 
-// GetMarket retrieves a market by ID
 func (s *Storage) GetMarket(id string) (*models.Market, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	market, exists := s.markets[id]
-	if !exists {
+	row := s.db.QueryRow(`SELECT `+marketCols+` FROM markets WHERE id = ?`, id)
+	m, err := scanMarket(row.Scan)
+	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("market not found: %s", id)
 	}
-	return market, nil
-}
-
-// GetAllMarkets returns all markets
-func (s *Storage) GetAllMarkets() ([]*models.Market, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	markets := make([]*models.Market, 0, len(s.markets))
-	for _, market := range s.markets {
-		markets = append(markets, market)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get market: %w", err)
 	}
-	return markets, nil
+	return m, nil
 }
 
-// UpdateMarket updates an existing market
+func (s *Storage) GetAllMarkets() ([]*models.Market, error) {
+	rows, err := s.db.Query(`SELECT ` + marketCols + ` FROM markets`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query markets: %w", err)
+	}
+	defer rows.Close()
+	var markets []*models.Market
+	for rows.Next() {
+		m, err := scanMarket(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan market: %w", err)
+		}
+		markets = append(markets, m)
+	}
+	if markets == nil {
+		markets = []*models.Market{}
+	}
+	return markets, rows.Err()
+}
+
 func (s *Storage) UpdateMarket(market *models.Market) error {
 	if err := market.Validate(); err != nil {
 		return fmt.Errorf("invalid market: %w", err)
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, exists := s.markets[market.ID]; !exists {
+	res, err := s.db.Exec(`
+		UPDATE markets SET
+			event_id=?, market_id=?, market_question=?, title=?, event_url=?, description=?,
+			category=?, subcategory=?, yes_prob=?, no_prob=?, volume_24hr=?, volume_1wk=?,
+			volume_1mo=?, liquidity=?, active=?, closed=?, last_updated=?, created_at=?
+		WHERE id=?`,
+		market.EventID, market.MarketID, market.MarketQuestion, market.Title,
+		market.EventURL, market.Description, market.Category, market.Subcategory,
+		market.YesProbability, market.NoProbability,
+		market.Volume24hr, market.Volume1wk, market.Volume1mo, market.Liquidity,
+		boolToInt(market.Active), boolToInt(market.Closed),
+		market.LastUpdated.UnixNano(), market.CreatedAt.UnixNano(),
+		market.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update market: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
 		return fmt.Errorf("market not found: %s", market.ID)
 	}
-
-	s.markets[market.ID] = market
 	return nil
 }
 
-// AddSnapshot adds a new snapshot for a market
+// --- Snapshots ---
+
 func (s *Storage) AddSnapshot(snapshot *models.Snapshot) error {
 	if err := snapshot.Validate(); err != nil {
 		return fmt.Errorf("invalid snapshot: %w", err)
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Verify market exists
-	if _, exists := s.markets[snapshot.EventID]; !exists {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM markets WHERE id = ?`, snapshot.EventID).Scan(&count); err != nil {
+		return fmt.Errorf("failed to verify market: %w", err)
+	}
+	if count == 0 {
 		return fmt.Errorf("market not found: %s", snapshot.EventID)
 	}
-
-	s.snapshots[snapshot.EventID] = append(s.snapshots[snapshot.EventID], *snapshot)
+	_, err := s.db.Exec(`
+		INSERT INTO snapshots (id, market_id, yes_prob, no_prob, timestamp, source)
+		VALUES (?,?,?,?,?,?)`,
+		snapshot.ID, snapshot.EventID,
+		snapshot.YesProbability, snapshot.NoProbability,
+		snapshot.Timestamp.UnixNano(), snapshot.Source,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to insert snapshot: %w", err)
+	}
 	return nil
 }
 
-// GetSnapshots retrieves all snapshots for a market
 func (s *Storage) GetSnapshots(marketID string) ([]models.Snapshot, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	snapshots, exists := s.snapshots[marketID]
-	if !exists {
-		return []models.Snapshot{}, nil
+	rows, err := s.db.Query(`
+		SELECT id, market_id, yes_prob, no_prob, timestamp, source
+		FROM snapshots WHERE market_id = ? ORDER BY timestamp ASC`, marketID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query snapshots: %w", err)
 	}
-
-	return snapshots, nil
+	defer rows.Close()
+	return scanSnapshots(rows)
 }
 
-// GetSnapshotsInWindow retrieves snapshots within a time window for a market
 func (s *Storage) GetSnapshotsInWindow(marketID string, window time.Duration) ([]models.Snapshot, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	snapshots, exists := s.snapshots[marketID]
-	if !exists {
-		return []models.Snapshot{}, nil
+	cutoff := time.Now().Add(-window).UnixNano()
+	rows, err := s.db.Query(`
+		SELECT id, market_id, yes_prob, no_prob, timestamp, source
+		FROM snapshots WHERE market_id = ? AND timestamp >= ? ORDER BY timestamp ASC`,
+		marketID, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query snapshots in window: %w", err)
 	}
-
-	now := time.Now()
-	var filtered []models.Snapshot
-	for _, snapshot := range snapshots {
-		if now.Sub(snapshot.Timestamp) <= window {
-			filtered = append(filtered, snapshot)
-		}
-	}
-
-	// Sort by timestamp ascending (oldest first)
-	sort.Slice(filtered, func(i, j int) bool {
-		return filtered[i].Timestamp.Before(filtered[j].Timestamp)
-	})
-
-	return filtered, nil
+	defer rows.Close()
+	return scanSnapshots(rows)
 }
 
-// AddChange adds a detected change
+// --- Changes ---
+
 func (s *Storage) AddChange(change *models.Change) error {
 	if err := change.Validate(); err != nil {
 		return fmt.Errorf("invalid change: %w", err)
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.changes = append(s.changes, *change)
+	_, err := s.db.Exec(`
+		INSERT INTO changes
+			(id, market_id, original_event_id, event_title, event_url, polymarket_market_id,
+			 market_question, magnitude, direction, old_prob, new_prob, time_window,
+			 detected_at, notified, signal_score)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		change.ID, change.EventID, change.OriginalEventID, change.EventTitle, change.EventURL,
+		change.MarketID, change.MarketQuestion,
+		change.Magnitude, change.Direction, change.OldProbability, change.NewProbability,
+		change.TimeWindow.Nanoseconds(), change.DetectedAt.UnixNano(),
+		boolToInt(change.Notified), change.SignalScore,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to insert change: %w", err)
+	}
 	return nil
 }
 
-// GetTopChanges returns the top K changes sorted by magnitude
 func (s *Storage) GetTopChanges(k int) ([]models.Change, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	// Sort changes by magnitude descending
-	sorted := make([]models.Change, len(s.changes))
-	copy(sorted, s.changes)
-
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Magnitude > sorted[j].Magnitude
-	})
-
-	// Return top K
-	if k > len(sorted) {
-		k = len(sorted)
+	rows, err := s.db.Query(`
+		SELECT id, market_id, original_event_id, event_title, event_url, polymarket_market_id,
+		       market_question, magnitude, direction, old_prob, new_prob, time_window,
+		       detected_at, notified, signal_score
+		FROM changes ORDER BY magnitude DESC LIMIT ?`, k)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query changes: %w", err)
 	}
-	return sorted[:k], nil
+	defer rows.Close()
+	return scanChanges(rows)
 }
 
-// ClearChanges removes all stored changes
 func (s *Storage) ClearChanges() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.changes = make([]models.Change, 0)
+	if _, err := s.db.Exec(`DELETE FROM changes`); err != nil {
+		return fmt.Errorf("failed to clear changes: %w", err)
+	}
 	return nil
 }
 
-// Save persists storage state to file
-func (s *Storage) Save() error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+// --- Rotation ---
 
-	// Create data directory if needed
-	dir := filepath.Dir(s.filePath)
-	if err := os.MkdirAll(dir, s.dirPermissions); err != nil {
-		return fmt.Errorf("failed to create data directory: %w", err)
-	}
-
-	// Prepare persistence file
-	data := PersistenceFile{
-		Version:   "2.0",
-		SavedAt:   time.Now(),
-		Markets:   s.markets,
-		Snapshots: s.snapshots,
-	}
-
-	// Marshal to JSON
-	jsonData, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal data: %w", err)
-	}
-
-	// Write to temporary file first (atomic write)
-	tempPath := s.filePath + ".tmp"
-	if err := os.WriteFile(tempPath, jsonData, s.filePermissions); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
-
-	// Rename temp file to actual file
-	if err := os.Rename(tempPath, s.filePath); err != nil {
-		_ = os.Remove(tempPath) // Clean up temp file on rename failure
-		return fmt.Errorf("failed to rename file: %w", err)
-	}
-
-	return nil
-}
-
-// Load restores storage state from file
-func (s *Storage) Load() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Clean up any stale temp files from previous crashes
-	tempPath := s.filePath + ".tmp"
-	if _, err := os.Stat(tempPath); err == nil {
-		_ = os.Remove(tempPath)
-	}
-
-	// Check if file exists
-	if _, err := os.Stat(s.filePath); os.IsNotExist(err) {
-		// No file to load, start fresh
-		return nil
-	}
-
-	// Read file
-	jsonData, err := os.ReadFile(s.filePath)
-	if err != nil {
-		return fmt.Errorf("failed to read file: %w", err)
-	}
-
-	// Unmarshal
-	var data PersistenceFile
-	if err := json.Unmarshal(jsonData, &data); err != nil {
-		return fmt.Errorf("failed to unmarshal data: %w", err)
-	}
-
-	// Clear and restore state
-	s.markets = data.Markets
-	if s.markets == nil {
-		s.markets = make(map[string]*models.Market)
-	}
-
-	s.snapshots = data.Snapshots
-	if s.snapshots == nil {
-		s.snapshots = make(map[string][]models.Snapshot)
-	}
-
-	// Changes are transient, clear them
-	s.changes = make([]models.Change, 0)
-
-	// Migrate if needed (version < 2.0)
-	if data.Version == "" || data.Version == "1.0" {
-		s.migrateToCompositeIDs()
-	}
-
-	return nil
-}
-
-// migrateToCompositeIDs migrates v1.0 data format to v2.0 composite ID format
-// In v1.0, single-market events used just EventID, while multi-market used EventID:MarketID
-// In v2.0, all markets use EventID:MarketID format for consistency
-func (s *Storage) migrateToCompositeIDs() {
-	newMarkets := make(map[string]*models.Market)
-	newSnapshots := make(map[string][]models.Snapshot)
-
-	for id, market := range s.markets {
-		// Check if ID needs migration (doesn't contain ":" and has MarketID)
-		if !strings.Contains(id, ":") && market.MarketID != "" {
-			// Migrate to composite ID format
-			newID := market.EventID + ":" + market.MarketID
-			market.ID = newID
-			newMarkets[newID] = market
-
-			// Migrate associated snapshots
-			if snaps, exists := s.snapshots[id]; exists {
-				for i := range snaps {
-					snaps[i].EventID = newID
-				}
-				newSnapshots[newID] = snaps
-			}
-		} else {
-			// Already in correct format or no MarketID
-			newMarkets[id] = market
-			if snaps, exists := s.snapshots[id]; exists {
-				newSnapshots[id] = snaps
-			}
-		}
-	}
-
-	s.markets = newMarkets
-	s.snapshots = newSnapshots
-}
-
-// RotateSnapshots removes old snapshots exceeding max limit
+// RotateSnapshots keeps at most maxSnapshotsPerEvent newest snapshots per market,
+// ordered by timestamp (not insertion order).
 func (s *Storage) RotateSnapshots() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for marketID, snapshots := range s.snapshots {
-		if len(snapshots) > s.maxSnapshotsPerEvent {
-			// Keep only the most recent snapshots
-			start := len(snapshots) - s.maxSnapshotsPerEvent
-			s.snapshots[marketID] = snapshots[start:]
+	rows, err := s.db.Query(`
+		SELECT market_id FROM snapshots
+		GROUP BY market_id HAVING COUNT(*) > ?`, s.maxSnapshotsPerEvent)
+	if err != nil {
+		return fmt.Errorf("failed to query markets for rotation: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		_, err := s.db.Exec(`
+			DELETE FROM snapshots
+			WHERE market_id = ? AND id NOT IN (
+				SELECT id FROM snapshots WHERE market_id = ?
+				ORDER BY timestamp DESC LIMIT ?
+			)`, id, id, s.maxSnapshotsPerEvent)
+		if err != nil {
+			return fmt.Errorf("failed to rotate snapshots for %s: %w", id, err)
 		}
 	}
-
 	return nil
 }
 
-// RotateMarkets removes markets when exceeding max limit
+// RotateMarkets keeps at most maxMarkets newest markets (by last_updated),
+// cascading delete removes their snapshots.
 func (s *Storage) RotateMarkets() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if len(s.markets) <= s.maxMarkets {
-		return nil
+	_, err := s.db.Exec(`
+		DELETE FROM markets WHERE id NOT IN (
+			SELECT id FROM markets ORDER BY last_updated DESC LIMIT ?
+		)`, s.maxMarkets)
+	if err != nil {
+		return fmt.Errorf("failed to rotate markets: %w", err)
 	}
-
-	// Find oldest markets to remove
-	type marketWithTime struct {
-		id          string
-		lastUpdated time.Time
-	}
-
-	var marketList []marketWithTime
-	for id, market := range s.markets {
-		marketList = append(marketList, marketWithTime{id: id, lastUpdated: market.LastUpdated})
-	}
-
-	// Sort by last updated (oldest first)
-	sort.Slice(marketList, func(i, j int) bool {
-		return marketList[i].lastUpdated.Before(marketList[j].lastUpdated)
-	})
-
-	// Remove oldest markets
-	toRemove := len(s.markets) - s.maxMarkets
-	for i := 0; i < toRemove; i++ {
-		marketID := marketList[i].id
-		delete(s.markets, marketID)
-		delete(s.snapshots, marketID)
-	}
-
 	return nil
 }
 
-// AddEvent is an alias for AddMarket for backward compatibility.
-// Deprecated: Use AddMarket instead.
-func (s *Storage) AddEvent(market *models.Market) error {
-	return s.AddMarket(market)
+// --- Helpers ---
+
+const marketCols = `id, event_id, market_id, market_question, title, event_url, description,
+	category, subcategory, yes_prob, no_prob, volume_24hr, volume_1wk, volume_1mo,
+	liquidity, active, closed, last_updated, created_at`
+
+func scanMarket(scan func(...any) error) (*models.Market, error) {
+	var m models.Market
+	var lastUpdatedNano, createdAtNano int64
+	var active, closed int
+	err := scan(
+		&m.ID, &m.EventID, &m.MarketID, &m.MarketQuestion, &m.Title, &m.EventURL,
+		&m.Description, &m.Category, &m.Subcategory,
+		&m.YesProbability, &m.NoProbability,
+		&m.Volume24hr, &m.Volume1wk, &m.Volume1mo, &m.Liquidity,
+		&active, &closed, &lastUpdatedNano, &createdAtNano,
+	)
+	if err != nil {
+		return nil, err
+	}
+	m.Active = active != 0
+	m.Closed = closed != 0
+	m.LastUpdated = time.Unix(0, lastUpdatedNano)
+	m.CreatedAt = time.Unix(0, createdAtNano)
+	return &m, nil
 }
 
-// GetEvent is an alias for GetMarket for backward compatibility.
-// Deprecated: Use GetMarket instead.
-func (s *Storage) GetEvent(id string) (*models.Market, error) {
-	return s.GetMarket(id)
+func scanSnapshots(rows *sql.Rows) ([]models.Snapshot, error) {
+	var result []models.Snapshot
+	for rows.Next() {
+		var s models.Snapshot
+		var tsNano int64
+		if err := rows.Scan(&s.ID, &s.EventID, &s.YesProbability, &s.NoProbability, &tsNano, &s.Source); err != nil {
+			return nil, fmt.Errorf("failed to scan snapshot: %w", err)
+		}
+		s.Timestamp = time.Unix(0, tsNano)
+		result = append(result, s)
+	}
+	if result == nil {
+		result = []models.Snapshot{}
+	}
+	return result, rows.Err()
 }
 
-// UpdateEvent is an alias for UpdateMarket for backward compatibility.
-// Deprecated: Use UpdateMarket instead.
-func (s *Storage) UpdateEvent(market *models.Market) error {
-	return s.UpdateMarket(market)
+func scanChanges(rows *sql.Rows) ([]models.Change, error) {
+	var result []models.Change
+	for rows.Next() {
+		var c models.Change
+		var detectedAtNano, timeWindowNano int64
+		var notified int
+		err := rows.Scan(
+			&c.ID, &c.EventID, &c.OriginalEventID, &c.EventTitle, &c.EventURL,
+			&c.MarketID, &c.MarketQuestion,
+			&c.Magnitude, &c.Direction, &c.OldProbability, &c.NewProbability,
+			&timeWindowNano, &detectedAtNano, &notified, &c.SignalScore,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan change: %w", err)
+		}
+		c.TimeWindow = time.Duration(timeWindowNano)
+		c.DetectedAt = time.Unix(0, detectedAtNano)
+		c.Notified = notified != 0
+		result = append(result, c)
+	}
+	return result, rows.Err()
 }
 
-// GetAllEvents is an alias for GetAllMarkets for backward compatibility.
-// Deprecated: Use GetAllMarkets instead.
-func (s *Storage) GetAllEvents() ([]*models.Market, error) {
-	return s.GetAllMarkets()
-}
-
-// RotateEvents is an alias for RotateMarkets for backward compatibility.
-// Deprecated: Use RotateMarkets instead.
-func (s *Storage) RotateEvents() error {
-	return s.RotateMarkets()
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

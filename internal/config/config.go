@@ -67,17 +67,11 @@ type TelegramConfig struct {
 	RetryDelayBase time.Duration `mapstructure:"retry_delay_base"`
 }
 
-// StorageConfig holds storage and persistence configuration
+// StorageConfig holds storage configuration
 type StorageConfig struct {
-	MaxEvents             int           `mapstructure:"max_events"`
-	MaxSnapshotsPerEvent  int           `mapstructure:"max_snapshots_per_event"`
-	MaxFileSizeMB         int           `mapstructure:"max_file_size_mb"`
-	PersistenceRetries    int           `mapstructure:"persistence_retries"`
-	PersistenceRetryDelay time.Duration `mapstructure:"persistence_retry_delay"`
-	FilePermissions       uint32        `mapstructure:"file_permissions"`
-	DirPermissions        uint32        `mapstructure:"dir_permissions"`
-	FilePath              string        `mapstructure:"file_path"`
-	DataDir               string        `mapstructure:"data_dir"`
+	MaxEvents            int    `mapstructure:"max_events"`
+	MaxSnapshotsPerEvent int    `mapstructure:"max_snapshots_per_event"`
+	DBPath               string `mapstructure:"db_path"`
 }
 
 // LoggingConfig holds logging configuration
@@ -136,13 +130,7 @@ func Load(path string) (*Config, error) {
 	// Storage
 	_ = v.BindEnv("storage.max_events", "POLY_ORACLE_STORAGE_MAX_EVENTS")
 	_ = v.BindEnv("storage.max_snapshots_per_event", "POLY_ORACLE_STORAGE_MAX_SNAPSHOTS_PER_EVENT")
-	_ = v.BindEnv("storage.max_file_size_mb", "POLY_ORACLE_STORAGE_MAX_FILE_SIZE_MB")
-	_ = v.BindEnv("storage.persistence_retries", "POLY_ORACLE_STORAGE_PERSISTENCE_RETRIES")
-	_ = v.BindEnv("storage.persistence_retry_delay", "POLY_ORACLE_STORAGE_PERSISTENCE_RETRY_DELAY")
-	_ = v.BindEnv("storage.file_permissions", "POLY_ORACLE_STORAGE_FILE_PERMISSIONS")
-	_ = v.BindEnv("storage.dir_permissions", "POLY_ORACLE_STORAGE_DIR_PERMISSIONS")
-	_ = v.BindEnv("storage.file_path", "POLY_ORACLE_STORAGE_FILE_PATH")
-	_ = v.BindEnv("storage.data_dir", "POLY_ORACLE_STORAGE_DATA_DIR")
+	_ = v.BindEnv("storage.db_path", "POLY_ORACLE_STORAGE_DB_PATH")
 
 	// Logging
 	_ = v.BindEnv("logging.level", "POLY_ORACLE_LOGGING_LEVEL")
@@ -196,16 +184,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("telegram.max_retries", 3)
 	v.SetDefault("telegram.retry_delay_base", "1s")
 
-	// Storage defaults (tuned for 4 GiB RAM / 128 GiB SSD)
+	// Storage defaults
 	v.SetDefault("storage.max_events", 10000)
 	v.SetDefault("storage.max_snapshots_per_event", 672) // 7 days of 15-min snapshots
-	v.SetDefault("storage.max_file_size_mb", 2048)       // 2 GB persistence file
-	v.SetDefault("storage.persistence_retries", 3)       // Retry 3 times on failure
-	v.SetDefault("storage.persistence_retry_delay", "5s")
-	v.SetDefault("storage.file_permissions", 0600)
-	v.SetDefault("storage.dir_permissions", 0700)
-	v.SetDefault("storage.file_path", "")
-	v.SetDefault("storage.data_dir", "")
+	v.SetDefault("storage.db_path", "")                  // empty = OS tmp dir
 
 	// Logging defaults
 	v.SetDefault("logging.level", "info")
@@ -274,10 +256,7 @@ func (c *Config) Validate() error {
 	if c.Storage.MaxSnapshotsPerEvent < 10 {
 		return fmt.Errorf("storage.max_snapshots_per_event must be at least 10")
 	}
-	if c.Storage.MaxFileSizeMB < 1 {
-		return fmt.Errorf("storage.max_file_size_mb must be at least 1")
-	}
-	// FilePath can be empty - storage layer will use OS tmp directory
+	// DBPath can be empty — storage layer defaults to OS tmp directory
 
 	// Validate Logging config
 	validLogLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}

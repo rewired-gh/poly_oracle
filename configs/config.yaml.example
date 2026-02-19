@@ -64,7 +64,6 @@ storage:
   # Tuned for 4 GiB RAM / 128 GiB SSD
   max_events: 10000                       # Track up to 10000 events
   max_snapshots_per_event: 672            # 7 days of 15-min snapshots for SNR
-  max_file_size_mb: 2048                  # Up to 2 GB persistence file
 
 logging:
   level: info    # debug, info, warn, error

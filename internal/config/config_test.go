@@ -99,8 +99,7 @@ func TestValidateErrors(t *testing.T) {
 				Storage: StorageConfig{
 					MaxEvents:            1000,
 					MaxSnapshotsPerEvent: 100,
-					MaxFileSizeMB:        100,
-					FilePath:             "./data/test.json",
+					DBPath: "",
 				},
 				Logging: LoggingConfig{
 					Level:  "info",
@@ -124,8 +123,7 @@ func TestValidateErrors(t *testing.T) {
 				Storage: StorageConfig{
 					MaxEvents:            1000,
 					MaxSnapshotsPerEvent: 100,
-					MaxFileSizeMB:        100,
-					FilePath:             "./data/test.json",
+					DBPath: "",
 				},
 				Logging: LoggingConfig{
 					Level:  "info",

@@ -10,10 +10,20 @@ import (
 	"github.com/rewired-gh/polyoracle/internal/storage"
 )
 
+func mustStorage(t *testing.T, maxMarkets, maxSnaps int) *storage.Storage {
+	t.Helper()
+	s, err := storage.New(maxMarkets, maxSnaps, ":memory:")
+	if err != nil {
+		t.Fatalf("failed to create storage: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
 // ─── Existing DetectChanges tests (T016: updated to remove threshold arg) ────
 
 func TestDetectChanges(t *testing.T) {
-	s := storage.New(100, 50, "/tmp/test-monitor.json", 0644, 0755)
+	s := mustStorage(t, 100, 50)
 	m := New(s)
 
 	now := time.Now()
@@ -76,7 +86,7 @@ func TestDetectChanges(t *testing.T) {
 }
 
 func TestDetectChanges_BelowThreshold(t *testing.T) {
-	s := storage.New(100, 50, "/tmp/test-threshold.json", 0644, 0755)
+	s := mustStorage(t, 100, 50)
 	m := New(s)
 
 	now := time.Now()
@@ -132,7 +142,7 @@ func TestDetectChanges_BelowThreshold(t *testing.T) {
 }
 
 func TestDetectChanges_OutOfOrderSnapshots(t *testing.T) {
-	s := storage.New(100, 50, "/tmp/test-out-of-order.json", 0644, 0755)
+	s := mustStorage(t, 100, 50)
 	m := New(s)
 
 	now := time.Now()
@@ -564,7 +574,7 @@ func TestScoring(t *testing.T) {
 	})
 
 	t.Run("Determinism — identical inputs produce identical ranked output", func(t *testing.T) {
-		store := storage.New(100, 50, "/tmp/test-determinism.json", 0644, 0755)
+		store := mustStorage(t, 100, 50)
 		mon := New(store)
 
 		markets := map[string]*models.Market{
@@ -597,7 +607,7 @@ func TestScoring(t *testing.T) {
 // ─── ScoreAndRank integration tests ──────────────────────────────────────────
 
 func TestScoreAndRank_TopKLimit(t *testing.T) {
-	store := storage.New(100, 50, "/tmp/test-rank-topk.json", 0644, 0755)
+	store := mustStorage(t, 100, 50)
 	mon := New(store)
 
 	markets := map[string]*models.Market{
@@ -618,7 +628,7 @@ func TestScoreAndRank_TopKLimit(t *testing.T) {
 }
 
 func TestScoreAndRank_NeverNil(t *testing.T) {
-	store := storage.New(100, 50, "/tmp/test-rank-nil.json", 0644, 0755)
+	store := mustStorage(t, 100, 50)
 	mon := New(store)
 
 	result := mon.ScoreAndRank(nil, map[string]*models.Market{}, 0.0, 5, 25000.0, 0.0, 0.0)
@@ -628,7 +638,7 @@ func TestScoreAndRank_NeverNil(t *testing.T) {
 }
 
 func TestScoreAndRank_MinScoreFilters(t *testing.T) {
-	store := storage.New(100, 50, "/tmp/test-rank-minscore.json", 0644, 0755)
+	store := mustStorage(t, 100, 50)
 	mon := New(store)
 
 	markets := map[string]*models.Market{
@@ -646,7 +656,7 @@ func TestScoreAndRank_MinScoreFilters(t *testing.T) {
 }
 
 func TestScoreAndRank_TopKZero(t *testing.T) {
-	store := storage.New(100, 50, "/tmp/test-rank-k0.json", 0644, 0755)
+	store := mustStorage(t, 100, 50)
 	mon := New(store)
 
 	markets := map[string]*models.Market{
@@ -663,7 +673,7 @@ func TestScoreAndRank_TopKZero(t *testing.T) {
 }
 
 func TestScoreAndRank_PreScoreFilters(t *testing.T) {
-	store := storage.New(100, 50, "/tmp/test-prescore-filters.json", 0644, 0755)
+	store := mustStorage(t, 100, 50)
 	mon := New(store)
 
 	markets := map[string]*models.Market{
@@ -863,7 +873,7 @@ func TestScenario_NoisySignalImportantEventFiltered(t *testing.T) {
 	minScore := sensitivity * sensitivity * 0.05 // 0.0125
 	const vRef = 25000.0
 
-	store := storage.New(200, 200, "/tmp/test-noisy-important.json", 0644, 0755)
+	store := mustStorage(t, 200, 200)
 	mon := New(store)
 
 	// Multi-market event "BTC price targets": high-volume, two separate markets.
@@ -1009,7 +1019,7 @@ func TestScenario_SignificantSignalUnimportantEventFiltered(t *testing.T) {
 	minScore := sensitivity * sensitivity * 0.05 // 0.0125
 	const vRef = 25000.0
 
-	store := storage.New(200, 200, "/tmp/test-unimportant-event.json", 0644, 0755)
+	store := mustStorage(t, 200, 200)
 	mon := New(store)
 
 	// "min-vol" — market just above liquidity floor ($30K), no historical data.
@@ -1127,7 +1137,7 @@ func TestTrajectoryConsistency_SinglePairWindow(t *testing.T) {
 // TestScoreAndRank_GroupsByOriginalEventID verifies that two markets from the
 // same original event (different composite IDs) are collapsed into one group.
 func TestScoreAndRank_GroupsByOriginalEventID(t *testing.T) {
-	store := storage.New(100, 50, "/tmp/test-grouping.json", 0644, 0755)
+	store := mustStorage(t, 100, 50)
 	mon := New(store)
 
 	markets := map[string]*models.Market{
@@ -1165,7 +1175,7 @@ func TestScoreAndRank_GroupsByOriginalEventID(t *testing.T) {
 // TestScoreAndRank_TopKAtGroupLevel verifies that top-k is applied at the event
 // group level, not at the individual market level.
 func TestScoreAndRank_TopKAtGroupLevel(t *testing.T) {
-	store := storage.New(100, 50, "/tmp/test-group-topk.json", 0644, 0755)
+	store := mustStorage(t, 100, 50)
 	mon := New(store)
 
 	// 4 markets: 2 from "grok" event + 2 singletons. k=2 should give 2 groups.
@@ -1193,7 +1203,7 @@ func TestScoreAndRank_TopKAtGroupLevel(t *testing.T) {
 // TestFilterRecentlySent_SuppressesDuplicates verifies that a market notified
 // recently with the same direction is suppressed within the cooldown window.
 func TestFilterRecentlySent_SuppressesDuplicates(t *testing.T) {
-	store := storage.New(100, 50, "/tmp/test-cooldown-dup.json", 0644, 0755)
+	store := mustStorage(t, 100, 50)
 	mon := New(store)
 
 	change := models.Change{
@@ -1224,7 +1234,7 @@ func TestFilterRecentlySent_SuppressesDuplicates(t *testing.T) {
 // TestFilterRecentlySent_AllowsDirectionChange verifies that a market is NOT
 // suppressed when the direction flips (e.g., was going up, now going down).
 func TestFilterRecentlySent_AllowsDirectionChange(t *testing.T) {
-	store := storage.New(100, 50, "/tmp/test-cooldown-dir.json", 0644, 0755)
+	store := mustStorage(t, 100, 50)
 	mon := New(store)
 
 	original := models.Change{
@@ -1251,7 +1261,7 @@ func TestFilterRecentlySent_AllowsDirectionChange(t *testing.T) {
 // entering the deterministic zone (>90% or <10%) is NOT suppressed even within
 // the cooldown window, when the previous notification was outside the zone.
 func TestFilterRecentlySent_AllowsDeterministicZoneEntry(t *testing.T) {
-	store := storage.New(100, 50, "/tmp/test-cooldown-detzone.json", 0644, 0755)
+	store := mustStorage(t, 100, 50)
 	mon := New(store)
 
 	// Previous notification: increase to 85% (outside det zone)
@@ -1278,7 +1288,7 @@ func TestFilterRecentlySent_AllowsDeterministicZoneEntry(t *testing.T) {
 
 // TestFilterRecentlySent_NeverNil verifies FilterRecentlySent never returns nil.
 func TestFilterRecentlySent_NeverNil(t *testing.T) {
-	store := storage.New(100, 50, "/tmp/test-cooldown-nil.json", 0644, 0755)
+	store := mustStorage(t, 100, 50)
 	mon := New(store)
 
 	result := mon.FilterRecentlySent([]models.Event{}, time.Hour)
@@ -1290,7 +1300,7 @@ func TestFilterRecentlySent_NeverNil(t *testing.T) {
 // TestFilterRecentlySent_PassesAfterCooldown verifies that a market IS passed
 // after the cooldown window expires.
 func TestFilterRecentlySent_PassesAfterCooldown(t *testing.T) {
-	store := storage.New(100, 50, "/tmp/test-cooldown-expire.json", 0644, 0755)
+	store := mustStorage(t, 100, 50)
 	mon := New(store)
 
 	change := models.Change{
