@@ -16,9 +16,9 @@ polymarket:
   # Volume filters (OR logic): pre-filter events before scoring.
   # High thresholds ensure only deeply liquid markets generate signals —
   # these markets have the best price discovery and most reliable SNR history.
-  volume_24hr_min: 100000      # $100K minimum 24hr volume — actively traded today
-  volume_1wk_min: 500000       # $500K minimum weekly volume — sustained liquidity
-  volume_1mo_min: 2000000      # $2M minimum monthly volume — established markets
+  volume_24hr_min: 25000       # $25K minimum 24hr volume — actively traded today
+  volume_1wk_min: 100000       # $100K minimum weekly volume — sustained liquidity
+  volume_1mo_min: 500000       # $500K minimum monthly volume — established markets
 
 monitor:
   # sensitivity controls the composite signal quality threshold (0.0=permissive, 1.0=strict)

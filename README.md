@@ -7,7 +7,7 @@ A lightweight Go service that monitors Polymarket prediction markets for signifi
 Each polling cycle:
 
 1. Fetches events from the Polymarket Gamma + CLOB APIs, filtered by category and volume thresholds
-2. Stores probability snapshots in memory (persisted to disk)
+2. Stores probability snapshots in SQLite (WAL mode)
 3. Detects changes over a rolling detection window using a four-factor composite signal score:
 
    ```
@@ -44,62 +44,30 @@ make run
 
 ## Configuration
 
-`configs/config.yaml`:
-
-```yaml
-polymarket:
-  poll_interval: 15m       # How often to poll Polymarket
-  limit: 5000              # Max events to fetch per cycle
-  categories:
-    - geopolitics
-    - tech
-    - finance
-    - world
-  # Volume pre-filters (OR logic): events pass if they meet any threshold
-  volume_24hr_min: 25000   # $25K minimum 24hr volume
-  volume_1wk_min: 100000   # $100K minimum weekly volume
-  volume_1mo_min: 250000   # $250K minimum monthly volume
-
-monitor:
-  sensitivity: 0.5         # Composite score threshold (0=permissive, 1=strict)
-                           # 0.3 → noisy, 0.5 → ~2-3 alerts/cycle (recommended), 0.7 → strict
-  top_k: 10                # Max event groups per notification
-  detection_intervals: 4   # Window = (detection_intervals + 1) × poll_interval
-  min_abs_change: 0.03     # Minimum absolute probability shift (3pp)
-  min_base_prob: 0.05      # Ignore markets below 5% (tail-probability zone)
-
-telegram:
-  bot_token: "YOUR_BOT_TOKEN"
-  chat_id: "YOUR_CHAT_ID"
-  enabled: true
-
-storage:
-  max_events: 10000
-  max_snapshots_per_event: 672   # 7 days of 15-min snapshots
-  max_file_size_mb: 2048
-
-logging:
-  level: info              # debug, info, warn, error
-```
+Full annotated configuration is in [`configs/config.yaml.example`](configs/config.yaml.example). Copy it to `configs/config.yaml` and fill in your Telegram credentials.
 
 ### Configuration Reference
 
 | Section | Field | Default | Description |
 |---------|-------|---------|-------------|
-| polymarket | poll_interval | 15m | Polling frequency |
-| polymarket | categories | geopolitics, tech, finance, world | Categories to monitor |
-| polymarket | volume_24hr_min | 25000 | Min $24hr volume (OR filter) |
-| polymarket | volume_1wk_min | 100000 | Min weekly volume (OR filter) |
-| polymarket | volume_1mo_min | 250000 | Min monthly volume (OR filter) |
-| monitor | sensitivity | 0.5 | Quality threshold (sensitivity² × 0.05 = minScore) |
+| polymarket | poll_interval | 5m | Polling frequency |
+| polymarket | categories | geopolitics, tech, finance, world | Categories to monitor — see [`docs/valid-categories.md`](docs/valid-categories.md) |
+| polymarket | volume_24hr_min | 100000 | Min $24hr volume (OR filter) |
+| polymarket | volume_1wk_min | 500000 | Min weekly volume (OR filter) |
+| polymarket | volume_1mo_min | 2000000 | Min monthly volume (OR filter) |
+| monitor | sensitivity | 0.7 | Quality threshold — `min_score = sensitivity² × 0.05` |
 | monitor | top_k | 10 | Max event groups per alert |
-| monitor | detection_intervals | 4 | Polling periods per detection window |
-| monitor | min_abs_change | 0.03 | Min absolute probability change (fraction) |
+| monitor | detection_intervals | 8 | Polling periods per detection window |
+| monitor | min_abs_change | 0.1 | Min absolute probability change (fraction) |
 | monitor | min_base_prob | 0.05 | Min base probability to avoid tail-zone KL inflation |
-| storage | max_events | 10000 | Max events tracked in memory |
-| storage | max_snapshots_per_event | 672 | Snapshot history per market |
+| storage | max_events | 10000 | Max events tracked |
+| storage | max_snapshots_per_event | 2016 | Snapshot history per market |
+| storage | db_path | `$TMPDIR/polyoracle/data.db` | SQLite database path |
 | telegram | bot_token | — | Required when telegram.enabled = true |
 | telegram | chat_id | — | Required when telegram.enabled = true |
+| logging | level | info | debug / info / warn / error |
+
+See [`docs/configuration-tuning-results.md`](docs/configuration-tuning-results.md) for threshold calibration guidance.
 
 ## Deployment
 
@@ -148,7 +116,7 @@ internal/
   models/               Domain types: Event, Market, Snapshot, Change
   polymarket/           Gamma + CLOB API client
   monitor/              Composite scoring, ranking, deduplication
-  storage/              In-memory store with file persistence
+  storage/              SQLite-backed persistence (WAL mode)
   telegram/             Telegram bot client (MarkdownV2 formatting)
 configs/                config.yaml.example, config.test.yaml
 deployments/            Dockerfile, systemd service
@@ -174,13 +142,14 @@ docs/                   Tuning notes, valid category reference
 ## Gotchas
 
 - **Config file required**: Service exits without a valid `configs/config.yaml`
-- **Polymarket category field**: The API `category` field is frequently null; filtering uses `tags[]` slugs
+- **Polymarket category field**: The API `category` field is frequently null; filtering uses `tags[]` slugs — see [`docs/valid-categories.md`](docs/valid-categories.md)
 - **Tail-probability suppression**: Markets below `min_base_prob` (default 5%) are excluded because KL divergence is structurally unreliable at the tails
 - **Cooldown deduplication**: Markets recently notified in the same direction are suppressed unless they cross into the high-conviction zone (>90% or <10%)
-- **Storage path**: Defaults to `/tmp/polyoracle/data.json`
+- **Storage path**: Defaults to `$TMPDIR/polyoracle/data.db` (SQLite); override with `POLY_ORACLE_STORAGE_DB_PATH`
 
 ## Dependencies
 
 - [Viper](https://github.com/spf13/viper) — configuration management
 - [go-telegram-bot-api](https://github.com/go-telegram-bot-api/telegram-bot-api) — Telegram integration
 - [google/uuid](https://github.com/google/uuid) — change record IDs
+- [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) — pure-Go SQLite driver (no CGO)
