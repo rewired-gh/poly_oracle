@@ -718,6 +718,58 @@ func TestScoreAndRank_PreScoreFilters(t *testing.T) {
 	}
 }
 
+func TestScoreAndRank_ConfirmationEntry_BypassesMinAbsChange(t *testing.T) {
+	store := mustStorage(t, 100, 50)
+	mon := New(store)
+
+	markets := map[string]*models.Market{
+		"enters-high":  {ID: "enters-high", EventID: "enters-high", Volume24hr: 500_000, Title: "Enters high", Category: "geopolitics"},
+		"enters-low":   {ID: "enters-low", EventID: "enters-low", Volume24hr: 500_000, Title: "Enters low", Category: "geopolitics"},
+		"already-high": {ID: "already-high", EventID: "already-high", Volume24hr: 500_000, Title: "Already high", Category: "geopolitics"},
+		"already-low":  {ID: "already-low", EventID: "already-low", Volume24hr: 500_000, Title: "Already low", Category: "geopolitics"},
+		"normal-small": {ID: "normal-small", EventID: "normal-small", Volume24hr: 500_000, Title: "Normal small", Category: "geopolitics"},
+	}
+
+	const minAbsChange = 0.10 // 10pp — deliberately high so small moves are filtered
+	const minBaseProb = 0.0   // disable base-prob filter
+
+	changes := []models.Change{
+		// Crosses INTO >95%: 93%→96% (3pp move, below minAbsChange) → should PASS
+		{ID: "c1", EventID: "enters-high", OldProbability: 0.93, NewProbability: 0.96, Magnitude: 0.03, Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now()},
+		// Crosses INTO <5%: 7%→3% (4pp move, below minAbsChange) → should PASS
+		{ID: "c2", EventID: "enters-low", OldProbability: 0.07, NewProbability: 0.03, Magnitude: 0.04, Direction: "decrease", TimeWindow: time.Hour, DetectedAt: time.Now()},
+		// Already inside >95%: 96%→97% (1pp move) → should be FILTERED (did not enter, was already there)
+		{ID: "c3", EventID: "already-high", OldProbability: 0.96, NewProbability: 0.97, Magnitude: 0.01, Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now()},
+		// Already inside <5%: 3%→2% (1pp move) → should be FILTERED (did not enter, was already there)
+		{ID: "c4", EventID: "already-low", OldProbability: 0.03, NewProbability: 0.02, Magnitude: 0.01, Direction: "decrease", TimeWindow: time.Hour, DetectedAt: time.Now()},
+		// Normal mid-range small move: 40%→43% (3pp < 10pp) → should be FILTERED
+		{ID: "c5", EventID: "normal-small", OldProbability: 0.40, NewProbability: 0.43, Magnitude: 0.03, Direction: "increase", TimeWindow: time.Hour, DetectedAt: time.Now()},
+	}
+
+	result := mon.ScoreAndRank(changes, markets, 0.0, 10, 25000.0, minAbsChange, minBaseProb)
+
+	passedIDs := make(map[string]bool)
+	for _, g := range result {
+		passedIDs[g.ID] = true
+	}
+
+	if !passedIDs["enters-high"] {
+		t.Error("ConfirmationEntry: 93%→96% (enters >95%) should bypass min_abs_change filter")
+	}
+	if !passedIDs["enters-low"] {
+		t.Error("ConfirmationEntry: 7%→3% (enters <5%) should bypass min_abs_change filter")
+	}
+	if passedIDs["already-high"] {
+		t.Error("ConfirmationEntry: 96%→97% (already in >95%) should still be filtered")
+	}
+	if passedIDs["already-low"] {
+		t.Error("ConfirmationEntry: 3%→2% (already in <5%) should still be filtered")
+	}
+	if passedIDs["normal-small"] {
+		t.Error("ConfirmationEntry: 40%→43% (mid-range small move) should be filtered by min_abs_change")
+	}
+}
+
 // ─── Scenario tests: quality bar calibration ──────────────────────────────────
 //
 // These tests verify the composite score algorithm produces appropriate

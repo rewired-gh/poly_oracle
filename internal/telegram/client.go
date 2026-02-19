@@ -7,6 +7,7 @@
 package telegram
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -49,6 +50,76 @@ func NewClient(botToken, chatID string, maxRetries int, retryDelayBase time.Dura
 		maxRetries:     maxRetries,
 		retryDelayBase: retryDelayBase,
 	}, nil
+}
+
+// ListenForCommands starts a goroutine that polls for Telegram updates and handles bot commands.
+// It returns immediately; the goroutine stops when ctx is cancelled.
+func (c *Client) ListenForCommands(ctx context.Context) {
+	u := tgbotapi.NewUpdate(0)
+	u.Timeout = 60
+	updates := c.bot.GetUpdatesChan(u)
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				c.bot.StopReceivingUpdates()
+				return
+			case update, ok := <-updates:
+				if !ok {
+					return
+				}
+				if update.Message != nil && update.Message.IsCommand() {
+					c.handleCommand(update.Message)
+				}
+			}
+		}
+	}()
+}
+
+func (c *Client) handleCommand(msg *tgbotapi.Message) {
+	switch msg.Command() {
+	case "ping":
+		reply := tgbotapi.NewMessage(msg.Chat.ID, "Pong")
+		c.bot.Send(reply) //nolint:errcheck
+	}
+}
+
+// SendError sends a monitoring error notification to Telegram.
+// Call this only on the first occurrence of a consecutive error sequence.
+func (c *Client) SendError(cycleErr error) error {
+	text := fmt.Sprintf("⚠️ *Monitoring error*\n`%s`", escapeMarkdownV2(cycleErr.Error()))
+	msg := tgbotapi.NewMessage(c.chatID, text)
+	msg.ParseMode = "MarkdownV2"
+
+	var lastErr error
+	for i := 0; i < c.maxRetries; i++ {
+		_, err := c.bot.Send(msg)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		time.Sleep(c.retryDelayBase * time.Duration(i+1))
+	}
+	return fmt.Errorf("failed to send error message after %d retries: %w", c.maxRetries, lastErr)
+}
+
+// SendRecovery sends a recovery notification to Telegram after consecutive failures.
+func (c *Client) SendRecovery(failureCount int) error {
+	text := fmt.Sprintf("✅ *Monitoring recovered* after %d consecutive failure\\(s\\)", failureCount)
+	msg := tgbotapi.NewMessage(c.chatID, text)
+	msg.ParseMode = "MarkdownV2"
+
+	var lastErr error
+	for i := 0; i < c.maxRetries; i++ {
+		_, err := c.bot.Send(msg)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		time.Sleep(c.retryDelayBase * time.Duration(i+1))
+	}
+	return fmt.Errorf("failed to send recovery message after %d retries: %w", c.maxRetries, lastErr)
 }
 
 // Send sends a notification with the detected event groups

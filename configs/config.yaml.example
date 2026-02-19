@@ -1,58 +1,56 @@
 # Polyoracle Configuration
 # Copy to config.yaml and set your Telegram credentials
 #
-# Single interval (poll_interval) drives: polling, detection window, persistence.
-# Expected: 2-5 high-quality alerts per cycle based on sensitivity.
+# Profile: investor with limited time — tuned for maximum signal quality.
+# Every alert represents a large, statistically significant move on a deeply
+# liquid market. Expected: 0-3 high-conviction alerts per cycle.
 
 polymarket:
-  poll_interval: 15m
+  poll_interval: 5m    # 5m: fastest practical polling — push notifications mean you act immediately
   limit: 5000
   categories:
     - geopolitics
     - tech
     - finance
     - world
-  # Volume filters (OR logic): pre-filter events before scoring
-  volume_24hr_min: 25000      # $25K minimum 24hr volume
-  volume_1wk_min: 100000      # $100K minimum weekly volume
-  volume_1mo_min: 250000      # $250K minimum monthly volume
+  # Volume filters (OR logic): pre-filter events before scoring.
+  # High thresholds ensure only deeply liquid markets generate signals —
+  # these markets have the best price discovery and most reliable SNR history.
+  volume_24hr_min: 100000      # $100K minimum 24hr volume — actively traded today
+  volume_1wk_min: 500000       # $500K minimum weekly volume — sustained liquidity
+  volume_1mo_min: 2000000      # $2M minimum monthly volume — established markets
 
 monitor:
   # sensitivity controls the composite signal quality threshold (0.0=permissive, 1.0=strict)
   # Formula: min_score = sensitivity² × 0.05  (window-agnostic — SNR handles scale)
   #
-  # Calibration guide (15m polling, typical $25K–$1M volume events):
-  #   0.3 → minScore=0.0045  — catches 3%+ moves on mid-volume markets; noisy
-  #   0.5 → minScore=0.0125  — catches meaningful 5%+ moves; ~2-3 alerts/cycle (recommended)
-  #   0.7 → minScore=0.0245  — strict; only large moves on high-volume markets pass
+  # Calibration guide (5m polling, $100K–$2M+ volume events):
+  #   0.5 → minScore=0.0125  — meaningful moves, moderate noise
+  #   0.7 → minScore=0.0245  — strict; only large moves on high-volume markets (set here)
+  #   0.8 → minScore=0.0320  — extreme; near-catalyst-level moves only
   #
-  # Example: a 9% drop at 91%→82% certainty on a $200K market scores ≈ 0.73 (passes at 0.5)
-  # Example: a 0.6% move at near-certainty on a $50K market scores ≈ 0.0005 (filtered at 0.5)
-  sensitivity: 0.5
-  top_k: 10
+  # Example: 9% drop at 91%→82% on $500K market → score ≈ 1.5+  (passes easily)
+  # Example: 5% move at 60%→65% on $100K market → score ≈ 0.04  (passes at 0.7)
+  # Example: 3% move on any market              → filtered by min_abs_change first
+  sensitivity: 0.7
+  top_k: 10   # Top 10 per cycle only — cuts alert fatigue without sacrificing coverage
 
   # detection_intervals: how many poll_interval periods form the detection window.
   # Effective window = (detection_intervals + 1) × poll_interval.
-  # The +1 absorbs per-cycle processing latency so boundary snapshots are never excluded.
-  # Minimum 2 (required for trajectory_consistency to have data).
-  # Higher values: smoother TC signal, detects slower trends, may repeat notifications.
-  # Lower values: more reactive, TC less discriminating.
-  # At 15m polling: 4 → effective 75m window (catches sub-hour trends with good TC discrimination)
-  detection_intervals: 4
+  # At 5m polling: 8 → effective 45m window  [(8+1) × 5m = 45m]
+  #   — optimized for push-notification investors who act immediately
+  #   — 9 snapshots in window: sufficient for trajectory consistency
+  #   — catches news-driven moves at their typical Polymarket reaction speed
+  detection_intervals: 8
 
-  # Pre-score hard filters applied before KL/SNR scoring.
-  # These address two root-cause failure modes:
-  #   1. KL divergence inflates for small absolute moves (especially at tail probabilities).
-  #      e.g. 0.1%→0.9% scores like a 20%→30% move due to ln(p_new/p_old) blow-up.
-  #   2. Tail-probability markets have near-zero historical σ, so SNR clamps to 5.0
-  #      and amplifies the inflated KL to easily pass any sensitivity threshold.
-  #
-  # min_abs_change: minimum absolute probability change required (fraction, e.g. 0.03 = 3pp).
-  # A 2pp move on a $1M geopolitics market passes sensitivity=0.5; this filter stops it.
-  min_abs_change: 0.03
+  # min_abs_change: minimum absolute probability change required (fraction, e.g. 0.05 = 5pp).
+  # Hard filter before KL/SNR scoring. Eliminates economically irrelevant micro-moves
+  # that KL divergence can inflate (especially near certainty boundaries).
+  # 10pp is the minimum threshold for a move to be worth an investor's attention.
+  min_abs_change: 0.1
 
   # min_base_prob: minimum base (old) probability (fraction, e.g. 0.05 = 5%).
-  # Markets below 5% probability are in the tail zone where KL is structurally unreliable.
+  # Markets below 5% are in the tail zone where KL is structurally unreliable.
   min_base_prob: 0.05
 
 telegram:
@@ -61,9 +59,8 @@ telegram:
   enabled: true
 
 storage:
-  # Tuned for 4 GiB RAM / 128 GiB SSD
   max_events: 10000                       # Track up to 10000 events
-  max_snapshots_per_event: 672            # 7 days of 15-min snapshots for SNR
+  max_snapshots_per_event: 2016           # 7 days × 12 snapshots/hr at 5m polling for SNR
 
 logging:
   level: info    # debug, info, warn, error

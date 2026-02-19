@@ -96,6 +96,11 @@ func main() {
 		cancel()
 	}()
 
+	// Start Telegram command listener
+	if cfg.Telegram.Enabled && telegramClient != nil {
+		telegramClient.ListenForCommands(ctx)
+	}
+
 	// Start monitoring loop
 	effectiveWindow := time.Duration(cfg.Monitor.DetectionIntervals+1) * cfg.Polymarket.PollInterval
 	logger.Info("Starting monitoring service (interval: %v, detection_intervals: %d, effective_window: %v, sensitivity: %.2f, top_k: %d)",
@@ -114,11 +119,30 @@ func main() {
 	ticker := time.NewTicker(cfg.Polymarket.PollInterval)
 	defer ticker.Stop()
 
+	consecutiveFailures := 0
+
+	handleCycleResult := func(err error) {
+		if err != nil {
+			consecutiveFailures++
+			logger.Error("Monitoring cycle failed: %v", err)
+			if consecutiveFailures == 1 && cfg.Telegram.Enabled && telegramClient != nil {
+				if sendErr := telegramClient.SendError(err); sendErr != nil {
+					logger.Warn("Failed to send error notification to Telegram: %v", sendErr)
+				}
+			}
+		} else {
+			if consecutiveFailures > 0 && cfg.Telegram.Enabled && telegramClient != nil {
+				if sendErr := telegramClient.SendRecovery(consecutiveFailures); sendErr != nil {
+					logger.Warn("Failed to send recovery notification to Telegram: %v", sendErr)
+				}
+			}
+			consecutiveFailures = 0
+		}
+	}
+
 	// Run initial poll immediately
 	logger.Debug("Running initial monitoring cycle")
-	if err := runMonitoringCycle(ctx, polyClient, mon, store, telegramClient, cfg, time.Now()); err != nil {
-		logger.Error("Monitoring cycle failed: %v", err)
-	}
+	handleCycleResult(runMonitoringCycle(ctx, polyClient, mon, store, telegramClient, cfg, time.Now()))
 
 	for {
 		select {
@@ -128,9 +152,7 @@ func main() {
 
 		case tickTime := <-ticker.C:
 			logger.Debug("Starting scheduled monitoring cycle")
-			if err := runMonitoringCycle(ctx, polyClient, mon, store, telegramClient, cfg, tickTime); err != nil {
-				logger.Error("Monitoring cycle failed: %v", err)
-			}
+			handleCycleResult(runMonitoringCycle(ctx, polyClient, mon, store, telegramClient, cfg, tickTime))
 
 			// Rotate old data
 			if err := store.RotateSnapshots(); err != nil {

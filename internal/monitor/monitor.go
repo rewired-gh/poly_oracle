@@ -302,7 +302,12 @@ func (m *Monitor) ScoreAndRank(
 		// KL divergence can be inflated for small absolute moves (especially at
 		// tail probabilities where log-ratios are large). Discard changes that
 		// are not economically meaningful regardless of KL or volume.
-		if minAbsChange > 0 && change.Magnitude < minAbsChange {
+		// Exception: skip this filter when the market *enters* confirmation territory
+		// (new probability crosses >95% or <5% from outside), as those transitions
+		// are always noteworthy regardless of move size.
+		entersConfirmation := (change.NewProbability > 0.95 && change.OldProbability <= 0.95) ||
+			(change.NewProbability < 0.05 && change.OldProbability >= 0.05)
+		if minAbsChange > 0 && change.Magnitude < minAbsChange && !entersConfirmation {
 			continue
 		}
 
