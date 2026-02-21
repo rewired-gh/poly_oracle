@@ -1,13 +1,8 @@
-# Polyoracle — Local Test Overrides
+# Test configuration
+# Used for local development and testing
 #
-# This file extends configs/config.yaml.example with settings useful for local
-# end-to-end testing. It enables debug logging so you can trace the full
-# processing pipeline without modifying your production config.yaml.
-#
-# Usage: ./bin/polyoracle --config configs/config.test.yaml
-#        (or set POLY_ORACLE_CONFIG=configs/config.test.yaml)
-#
-# All values not listed here fall back to configs/config.yaml.example defaults.
+# Currently configured with MODERATE sensitivity profile
+# See configs/config.yaml.example for other sensitivity options
 
 polymarket:
   poll_interval: 5m
@@ -17,16 +12,23 @@ polymarket:
     - tech
     - finance
     - world
+
+monitor:
+  # Detection algorithm parameters (MODERATE profile)
+  window_size: 5
+  alpha: 0.1
+  ceiling: 10.0
+  threshold: 3.0
+
+  # Volume filters (MODERATE profile)
   volume_24hr_min: 25000
   volume_1wk_min: 100000
   volume_1mo_min: 500000
 
-monitor:
-  sensitivity: 0.7
+  # Notification settings (MODERATE profile)
   top_k: 10
-  detection_intervals: 8
-  min_abs_change: 0.1
-  min_base_prob: 0.05
+  cooldown_multiplier: 5
+  checkpoint_interval: 12
 
 telegram:
   bot_token: "YOUR_BOT_TOKEN"
@@ -35,8 +37,6 @@ telegram:
 
 storage:
   max_events: 10000
-  max_snapshots_per_event: 2016
 
 logging:
-  level: debug    # Key override: debug logging for local testing
-  format: text    # Human-readable output
+  level: debug

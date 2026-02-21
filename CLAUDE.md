@@ -17,6 +17,7 @@ make dev               # Development mode with auto-reload (requires entr)
 make docker-build      # Build Docker image
 make docker-run        # Run Docker container
 make clean             # Remove binaries and data directory
+make generate-config   # Regenerate configs/config.yaml.example from binary
 ```
 
 ## Architecture
@@ -27,7 +28,7 @@ Single binary service with polling architecture:
 2. **Monitor Service** → Orchestrates polling cycles
 3. **Polymarket Client** → Fetches events from Gamma API + CLOB API
 4. **Storage** → SQLite-backed persistence via `modernc.org/sqlite` (no CGO); WAL mode
-5. **Change Detection** → Four-factor composite scoring: KL divergence × log-volume weight × historical SNR × trajectory consistency; results ranked via `ScoreAndRank`
+5. **Change Detection** → Four-factor composite scoring: Hellinger distance × liquidity pressure (`erf(turnover_ratio)`) / Welford σ × trajectory consistency (`TCBuffer`); pipeline: `ProcessPoll` → `PostProcessAlerts` → `GroupByEvent`
 6. **Telegram Client** → Sends notifications for top K changes
 
 Data flow: Poll → Store → Detect Changes → Notify → Persist
@@ -39,7 +40,9 @@ Data flow: Poll → Store → Detect Changes → Notify → Persist
 - `configs/config.test.yaml` — Local test overrides (debug logging; same values as example otherwise)
 - `internal/config/config.go` — Config loading & validation; Go-side defaults
 - `internal/logger/logger.go` — Structured logger (init with `logger.Init(level, format)`)
-- `internal/monitor/monitor.go` — Composite scoring and ranking algorithm (`ScoreAndRank`)
+- `internal/models/state.go` — Core domain types: `MarketState`, `Alert`, `EventGroup`
+- `internal/monitor/welford.go` — Welford online algorithm for running mean/σ; `TCBuffer` for trajectory consistency
+- `internal/monitor/monitor.go` — Composite scoring pipeline (`ProcessPoll`, `PostProcessAlerts`, `GroupByEvent`)
 
 ## Testing
 

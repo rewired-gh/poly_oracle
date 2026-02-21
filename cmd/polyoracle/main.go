@@ -12,7 +12,6 @@ import (
 
 	"github.com/rewired-gh/polyoracle/internal/config"
 	"github.com/rewired-gh/polyoracle/internal/logger"
-	"github.com/rewired-gh/polyoracle/internal/models"
 	"github.com/rewired-gh/polyoracle/internal/monitor"
 	"github.com/rewired-gh/polyoracle/internal/polymarket"
 	"github.com/rewired-gh/polyoracle/internal/storage"
@@ -24,25 +23,19 @@ var configPath = flag.String("config", "configs/config.yaml", "Path to configura
 func main() {
 	flag.Parse()
 
-	// Load configuration
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-
-	// Validate configuration
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Invalid configuration: %v", err)
 	}
 
-	// Setup logging with level support
 	logger.Init(cfg.Logging.Level, cfg.Logging.Format)
 	logger.Info("Configuration loaded from %s", *configPath)
 
-	// Initialize storage
 	store, err := storage.New(
 		cfg.Storage.MaxEvents,
-		cfg.Storage.MaxSnapshotsPerEvent,
 		cfg.Storage.DBPath,
 	)
 	if err != nil {
@@ -54,10 +47,9 @@ func main() {
 		}
 	}()
 
-	// Initialize Polymarket client
 	polyClient := polymarket.NewClient(
 		cfg.Polymarket.GammaAPIURL,
-		cfg.Polymarket.CLOBAPIURL,
+		cfg.Polymarket.ClobAPIURL,
 		cfg.Polymarket.Timeout,
 		polymarket.ClientConfig{
 			MaxRetries:          cfg.Polymarket.MaxRetries,
@@ -68,10 +60,20 @@ func main() {
 		},
 	)
 
-	// Initialize monitor
-	mon := monitor.New(store)
+	monitorConfig := monitor.Config{
+		WindowSize:         cfg.Monitor.WindowSize,
+		Alpha:              cfg.Monitor.Alpha,
+		Ceiling:            cfg.Monitor.Ceiling,
+		Threshold:          cfg.Monitor.Threshold,
+		Volume24hrMin:      cfg.Monitor.Volume24hrMin,
+		Volume1wkMin:       cfg.Monitor.Volume1wkMin,
+		Volume1moMin:       cfg.Monitor.Volume1moMin,
+		TopK:               cfg.Monitor.TopK,
+		CooldownMultiplier: cfg.Monitor.CooldownMultiplier,
+		CheckpointInterval: cfg.Monitor.CheckpointInterval,
+	}
+	mon := monitor.New(store, monitorConfig)
 
-	// Initialize Telegram client
 	var telegramClient *telegram.Client
 	if cfg.Telegram.Enabled {
 		telegramClient, err = telegram.NewClient(cfg.Telegram.BotToken, cfg.Telegram.ChatID, cfg.Telegram.MaxRetries, cfg.Telegram.RetryDelayBase)
@@ -83,7 +85,6 @@ func main() {
 		logger.Debug("Telegram notifications disabled")
 	}
 
-	// Setup graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -93,27 +94,19 @@ func main() {
 	go func() {
 		<-sigChan
 		logger.Info("Shutdown signal received, cleaning up...")
+		mon.Shutdown()
 		cancel()
 	}()
 
-	// Start Telegram command listener
 	if cfg.Telegram.Enabled && telegramClient != nil {
 		telegramClient.ListenForCommands(ctx)
 	}
 
-	// Start monitoring loop
-	effectiveWindow := time.Duration(cfg.Monitor.DetectionIntervals+1) * cfg.Polymarket.PollInterval
-	logger.Info("Starting monitoring service (interval: %v, detection_intervals: %d, effective_window: %v, sensitivity: %.2f, top_k: %d)",
+	logger.Info("Starting monitoring service (interval: %v, window_size: %d, threshold: %.1f, top_k: %d)",
 		cfg.Polymarket.PollInterval,
-		cfg.Monitor.DetectionIntervals,
-		effectiveWindow,
-		cfg.Monitor.Sensitivity,
+		cfg.Monitor.WindowSize,
+		cfg.Monitor.Threshold,
 		cfg.Monitor.TopK,
-	)
-	logger.Debug("Monitoring configuration: categories=%v, volume_24hr_min=%.0f, volume_filter_or=%v",
-		cfg.Polymarket.Categories,
-		cfg.Polymarket.Volume24hrMin,
-		cfg.Polymarket.VolumeFilterOR,
 	)
 
 	ticker := time.NewTicker(cfg.Polymarket.PollInterval)
@@ -140,9 +133,8 @@ func main() {
 		}
 	}
 
-	// Run initial poll immediately
 	logger.Debug("Running initial monitoring cycle")
-	handleCycleResult(runMonitoringCycle(ctx, polyClient, mon, store, telegramClient, cfg, time.Now()))
+	handleCycleResult(runMonitoringCycle(ctx, polyClient, mon, store, telegramClient, cfg))
 
 	for {
 		select {
@@ -150,14 +142,9 @@ func main() {
 			logger.Info("Service stopped")
 			return
 
-		case tickTime := <-ticker.C:
+		case <-ticker.C:
 			logger.Debug("Starting scheduled monitoring cycle")
-			handleCycleResult(runMonitoringCycle(ctx, polyClient, mon, store, telegramClient, cfg, tickTime))
-
-			// Rotate old data
-			if err := store.RotateSnapshots(); err != nil {
-				logger.Warn("Failed to rotate snapshots: %v", err)
-			}
+			handleCycleResult(runMonitoringCycle(ctx, polyClient, mon, store, telegramClient, cfg))
 			if err := store.RotateMarkets(); err != nil {
 				logger.Warn("Failed to rotate markets: %v", err)
 			}
@@ -172,161 +159,71 @@ func runMonitoringCycle(
 	store *storage.Storage,
 	telegramClient *telegram.Client,
 	cfg *config.Config,
-	cycleTime time.Time, // tick time (or startup time for the initial cycle)
 ) error {
 	startTime := time.Now()
 	logger.Info("Starting monitoring cycle")
 
-	// Fetch events from Polymarket
-	logger.Debug("Fetching events from Polymarket API (categories: %v, limit: %d)", cfg.Polymarket.Categories, cfg.Polymarket.Limit)
-	events, err := polyClient.FetchEvents(
-		ctx,
-		cfg.Polymarket.Categories,
-		cfg.Polymarket.Volume24hrMin,
-		cfg.Polymarket.Volume1wkMin,
-		cfg.Polymarket.Volume1moMin,
-		cfg.Polymarket.VolumeFilterOR,
-		cfg.Polymarket.Limit,
-	)
+	logger.Debug("Fetching markets from Polymarket API (categories: %v, limit: %d)", cfg.Polymarket.Categories, cfg.Polymarket.Limit)
+	// Volume filtering is handled by monitor, not at API level
+	markets, err := polyClient.FetchEvents(ctx, cfg.Polymarket.Categories, 0, 0, 0, false, cfg.Polymarket.Limit)
 	if err != nil {
-		return fmt.Errorf("failed to fetch events: %w", err)
+		return fmt.Errorf("failed to fetch markets: %w", err)
 	}
-	logger.Info("Fetched %d events from %d categories", len(events), len(cfg.Polymarket.Categories))
+	logger.Info("Fetched %d markets from %d categories", len(markets), len(cfg.Polymarket.Categories))
 
-	// Update storage with new events and create snapshots
-	logger.Debug("Processing fetched events and creating snapshots")
-	newEvents := 0
-	updatedEvents := 0
-	for i := range events {
-		event := &events[i]
+	logger.Debug("Processing fetched markets")
+	newMarkets := 0
+	updatedMarkets := 0
+	for i := range markets {
+		market := &markets[i]
 
-		// Add or update event
-		existingEvent, err := store.GetMarket(event.ID)
+		existingMarket, err := store.GetMarket(market.ID)
 		if err != nil {
-			// Event doesn't exist, create it
-			if err := store.AddMarket(event); err != nil {
-				logger.Warn("Failed to add event %s: %v", event.ID, err)
+			if err := store.AddMarket(market); err != nil {
+				logger.Warn("Failed to add market %s: %v", market.ID, err)
 				continue
 			}
-			newEvents++
+			newMarkets++
 		} else {
-			// Update existing event
-			event.CreatedAt = existingEvent.CreatedAt
-			if err := store.UpdateMarket(event); err != nil {
-				logger.Warn("Failed to update event %s: %v", event.ID, err)
+			market.CreatedAt = existingMarket.CreatedAt
+			if err := store.UpdateMarket(market); err != nil {
+				logger.Warn("Failed to update market %s: %v", market.ID, err)
 				continue
 			}
-			updatedEvents++
-		}
-
-		// Create snapshot for current probability.
-		// Use cycleTime (tick time) as the timestamp, not time.Now() after processing.
-		// This ensures snapshot ages are exact multiples of pollInterval, so the
-		// detection window math is not skewed by per-cycle processing latency.
-		snapshot := &models.Snapshot{
-			ID:             generateID(),
-			EventID:        event.ID,
-			YesProbability: event.YesProbability,
-			NoProbability:  event.NoProbability,
-			Timestamp:      cycleTime,
-			Source:         "polymarket-gamma-api",
-		}
-
-		if err := store.AddSnapshot(snapshot); err != nil {
-			logger.Warn("Failed to add snapshot for event %s: %v", event.ID, err)
+			updatedMarkets++
 		}
 	}
-	logger.Debug("Event processing complete: %d new, %d updated", newEvents, updatedEvents)
+	logger.Debug("Market processing complete: %d new, %d updated", newMarkets, updatedMarkets)
 
-	// Detect significant changes
-	allEvents, err := store.GetAllMarkets()
-	if err != nil {
-		return fmt.Errorf("failed to get events: %w", err)
-	}
-	// Window = (N+1) × pollInterval, not N × pollInterval.
-	// With cycleTime-stamped snapshots, the oldest snapshot from N cycles ago is
-	// exactly N×pollInterval old at tick time, but GetSnapshotsInWindow runs after
-	// processing completes (tick + τ), making it N×pollInterval + τ old. The extra
-	// interval absorbs τ so the boundary snapshot is never accidentally excluded.
-	detectionWindow := time.Duration(cfg.Monitor.DetectionIntervals+1) * cfg.Polymarket.PollInterval
-	logger.Debug("Detecting changes across %d total events (window: %v = (%d+1) × %v)",
-		len(allEvents), detectionWindow, cfg.Monitor.DetectionIntervals, cfg.Polymarket.PollInterval)
-	changes, detectionErrors, err := mon.DetectChanges(convertMarkets(allEvents), detectionWindow)
-	if err != nil {
-		return fmt.Errorf("failed to detect changes: %w", err)
-	}
-	for _, detErr := range detectionErrors {
-		logger.Warn("Failed to detect changes for event %s: %v", detErr.EventID, detErr.Err)
-	}
+	alerts := mon.ProcessPoll(markets)
+	logger.Info("Detected %d alerts above threshold", len(alerts))
 
-	// Clear old changes and store new ones
-	if err := store.ClearChanges(); err != nil {
-		logger.Warn("Failed to clear old changes: %v", err)
-	}
-	for i := range changes {
-		if err := store.AddChange(&changes[i]); err != nil {
-			logger.Warn("Failed to add change: %v", err)
-		}
-	}
+	groups := mon.PostProcessAlerts(alerts, cfg.Polymarket.PollInterval)
 
-	logger.Info("Detected %d changes above floor", len(changes))
-
-	// Score and rank changes using composite signal quality.
-	// The four factors (KL, volume, SNR, trajectory) are already window-agnostic:
-	// SNR normalizes netChange by historical per-interval volatility, so scaling
-	// minScore by window duration is incorrect and creates a near-zero bar at 15m.
-	minScore := cfg.Monitor.MinCompositeScore()
-	marketsMap := buildMarketsMap(allEvents)
-	topGroups := mon.ScoreAndRank(changes, marketsMap, minScore, cfg.Monitor.TopK, cfg.Polymarket.Volume24hrMin, cfg.Monitor.MinAbsChange, cfg.Monitor.MinBaseProb)
-
-	// Suppress recently-sent markets (same direction, within cooldown window)
-	topGroups = mon.FilterRecentlySent(topGroups, detectionWindow)
-
-	if len(topGroups) > 0 {
+	if len(groups) > 0 {
 		totalMarkets := 0
-		for _, g := range topGroups {
+		for _, g := range groups {
 			totalMarkets += len(g.Markets)
 		}
-		logger.Info("Scored changes: %d detected, %d groups (%d markets) passed quality bar (min_score=%.4f)",
-			len(changes), len(topGroups), totalMarkets, minScore)
+		logger.Info("Post-processed alerts: %d groups (%d markets)", len(groups), totalMarkets)
 
 		if cfg.Telegram.Enabled && telegramClient != nil {
-			logger.Debug("Sending top %d event groups to Telegram", len(topGroups))
-			if err := telegramClient.Send(topGroups); err != nil {
+			logger.Debug("Sending top %d event groups to Telegram", len(groups))
+			if err := telegramClient.Send(groups); err != nil {
 				logger.Error("Failed to send Telegram notification: %v", err)
 			} else {
-				logger.Info("Sent Telegram notification with top %d event groups", len(topGroups))
-				mon.RecordNotified(topGroups)
+				logger.Info("Sent Telegram notification with top %d event groups", len(groups))
+				mon.RecordNotified(groups)
 			}
 		} else {
-			logger.Debug("Changes detected but Telegram notifications disabled or client not initialized")
+			logger.Debug("Alerts detected but Telegram notifications disabled or client not initialized")
 		}
 	} else {
-		logger.Info("No changes above quality bar this cycle (min_score=%.4f)", minScore)
+		logger.Info("No alerts above quality bar this cycle")
 	}
 
 	duration := time.Since(startTime)
 	logger.Info("Monitoring cycle completed in %v", duration)
 
 	return nil
-}
-
-func generateID() string {
-	return fmt.Sprintf("%d", time.Now().UnixNano())
-}
-
-func convertMarkets(markets []*models.Market) []models.Market {
-	result := make([]models.Market, len(markets))
-	for i, market := range markets {
-		result[i] = *market
-	}
-	return result
-}
-
-func buildMarketsMap(markets []*models.Market) map[string]*models.Market {
-	result := make(map[string]*models.Market, len(markets))
-	for _, market := range markets {
-		result[market.ID] = market
-	}
-	return result
 }

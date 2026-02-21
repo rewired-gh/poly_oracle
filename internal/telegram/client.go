@@ -1,9 +1,4 @@
 // Package telegram provides a client for sending notifications via Telegram Bot API.
-// It formats detected probability changes into human-readable messages and handles
-// delivery with retry logic for reliability.
-//
-// The client supports Markdown formatting and includes error handling for
-// common Telegram API issues like rate limiting and network failures.
 package telegram
 
 import (
@@ -17,7 +12,7 @@ import (
 	"github.com/rewired-gh/polyoracle/internal/models"
 )
 
-// Client handles Telegram notifications
+// Client handles Telegram notifications.
 type Client struct {
 	bot            *tgbotapi.BotAPI
 	chatID         int64
@@ -25,7 +20,7 @@ type Client struct {
 	retryDelayBase time.Duration
 }
 
-// NewClient creates a new Telegram client
+// NewClient creates a new Telegram client.
 func NewClient(botToken, chatID string, maxRetries int, retryDelayBase time.Duration) (*Client, error) {
 	bot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
@@ -85,112 +80,82 @@ func (c *Client) handleCommand(msg *tgbotapi.Message) {
 	}
 }
 
-// SendError sends a monitoring error notification to Telegram.
+// sendMarkdownV2 sends a MarkdownV2 message with linear-backoff retry.
+func (c *Client) sendMarkdownV2(text string) error {
+	msg := tgbotapi.NewMessage(c.chatID, text)
+	msg.ParseMode = "MarkdownV2"
+
+	var lastErr error
+	for i := 0; i < c.maxRetries; i++ {
+		if _, err := c.bot.Send(msg); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		time.Sleep(c.retryDelayBase * time.Duration(i+1))
+	}
+	return fmt.Errorf("failed after %d retries: %w", c.maxRetries, lastErr)
+}
+
+// SendError sends a monitoring error notification.
 // Call this only on the first occurrence of a consecutive error sequence.
 func (c *Client) SendError(cycleErr error) error {
 	text := fmt.Sprintf("⚠️ *Monitoring error*\n`%s`", escapeMarkdownV2(cycleErr.Error()))
-	msg := tgbotapi.NewMessage(c.chatID, text)
-	msg.ParseMode = "MarkdownV2"
-
-	var lastErr error
-	for i := 0; i < c.maxRetries; i++ {
-		_, err := c.bot.Send(msg)
-		if err == nil {
-			return nil
-		}
-		lastErr = err
-		time.Sleep(c.retryDelayBase * time.Duration(i+1))
-	}
-	return fmt.Errorf("failed to send error message after %d retries: %w", c.maxRetries, lastErr)
+	return c.sendMarkdownV2(text)
 }
 
-// SendRecovery sends a recovery notification to Telegram after consecutive failures.
+// SendRecovery sends a recovery notification after consecutive failures.
 func (c *Client) SendRecovery(failureCount int) error {
 	text := fmt.Sprintf("✅ *Monitoring recovered* after %d consecutive failure\\(s\\)", failureCount)
-	msg := tgbotapi.NewMessage(c.chatID, text)
-	msg.ParseMode = "MarkdownV2"
-
-	var lastErr error
-	for i := 0; i < c.maxRetries; i++ {
-		_, err := c.bot.Send(msg)
-		if err == nil {
-			return nil
-		}
-		lastErr = err
-		time.Sleep(c.retryDelayBase * time.Duration(i+1))
-	}
-	return fmt.Errorf("failed to send recovery message after %d retries: %w", c.maxRetries, lastErr)
+	return c.sendMarkdownV2(text)
 }
 
-// Send sends a notification with the detected event groups
-func (c *Client) Send(groups []models.Event) error {
-	message := c.formatMessage(groups)
-
-	// Create message
-	msg := tgbotapi.NewMessage(c.chatID, message)
-	msg.ParseMode = "MarkdownV2" // Use MarkdownV2 for better escaping support
-
-	// Send with retry
-	var lastErr error
-
-	for i := 0; i < c.maxRetries; i++ {
-		_, err := c.bot.Send(msg)
-		if err == nil {
-			return nil
-		}
-		lastErr = err
-		time.Sleep(c.retryDelayBase * time.Duration(i+1))
-	}
-
-	return fmt.Errorf("failed to send message after %d retries: %w", c.maxRetries, lastErr)
+// Send sends a notification with the detected event groups.
+func (c *Client) Send(groups []models.EventGroup) error {
+	return c.sendMarkdownV2(c.formatMessage(groups))
 }
 
 // formatMessage formats event groups into a Telegram MarkdownV2 message.
-// Each group is one numbered entry; markets within the group appear as sub-bullets.
-func (c *Client) formatMessage(groups []models.Event) string {
+func (c *Client) formatMessage(groups []models.EventGroup) string {
 	message := "🚨 *Notable Odds Movements*\n\n"
 
-	// Show detected time once at the top (from the first market of the first group)
 	if len(groups) > 0 && len(groups[0].Markets) > 0 {
 		dateStr := escapeMarkdownV2(groups[0].Markets[0].DetectedAt.Format("2006-01-02 15:04:05"))
 		message += fmt.Sprintf("📅 Detected: %s\n\n", dateStr)
 	}
 
 	for i, group := range groups {
-		// Create clickable hyperlink for event title
 		var titleLink string
-		if group.URL != "" {
-			escapedQuestion := escapeMarkdownV2(group.Title)
-			titleLink = fmt.Sprintf("[%s](%s)", escapedQuestion, group.URL)
+		if group.EventURL != "" {
+			escapedTitle := escapeMarkdownV2(group.EventTitle)
+			titleLink = fmt.Sprintf("[%s](%s)", escapedTitle, group.EventURL)
 		} else {
-			titleLink = escapeMarkdownV2(group.Title)
+			titleLink = escapeMarkdownV2(group.EventTitle)
 		}
 
 		message += fmt.Sprintf("%d\\. %s\n", i+1, titleLink)
 
-		for _, change := range group.Markets {
+		for _, alert := range group.Markets {
 			directionEmoji := "📈"
-			if change.Direction == "decrease" {
+			if alert.NewProb < alert.OldProb {
 				directionEmoji = "📉"
 			}
 
-			magnitudePct := change.Magnitude * 100
-			oldPct := change.OldProbability * 100
-			newPct := change.NewProbability * 100
+			priceDeltaPct := alert.PriceDelta * 100
+			oldPct := alert.OldProb * 100
+			newPct := alert.NewProb * 100
 
-			magnitudeStr := escapeMarkdownV2(fmt.Sprintf("%.1f%%", magnitudePct))
+			deltaStr := escapeMarkdownV2(fmt.Sprintf("%.1f%%", priceDeltaPct))
 			oldPctStr := escapeMarkdownV2(fmt.Sprintf("%.1f%%", oldPct))
 			newPctStr := escapeMarkdownV2(fmt.Sprintf("%.1f%%", newPct))
-			windowStr := escapeMarkdownV2(formatDuration(change.TimeWindow))
 
-			// Show market question as sub-bullet when it differs from the event question
-			if change.MarketQuestion != "" && change.MarketQuestion != group.Title {
-				escapedMarketQ := escapeMarkdownV2(change.MarketQuestion)
+			if alert.MarketQuestion != "" && alert.MarketQuestion != group.EventTitle {
+				escapedMarketQ := escapeMarkdownV2(alert.MarketQuestion)
 				message += fmt.Sprintf("   🎯 %s\n", escapedMarketQ)
 			}
 
-			message += fmt.Sprintf("   %s *%s* \\(%s → %s\\) ⏱ %s\n",
-				directionEmoji, magnitudeStr, oldPctStr, newPctStr, windowStr)
+			message += fmt.Sprintf("   %s *%s* \\(%s → %s\\)\n",
+				directionEmoji, deltaStr, oldPctStr, newPctStr)
 		}
 
 		message += "\n"
@@ -200,7 +165,6 @@ func (c *Client) formatMessage(groups []models.Event) string {
 }
 
 // escapeMarkdownV2 escapes special characters for Telegram MarkdownV2.
-// Characters that need escaping: _ * [ ] ( ) ~ ` > # + - = | { } . !
 func escapeMarkdownV2(text string) string {
 	var b strings.Builder
 	b.Grow(len(text) + len(text)/4) // pre-allocate with room for escapes
@@ -212,12 +176,4 @@ func escapeMarkdownV2(text string) string {
 		b.WriteRune(char)
 	}
 	return b.String()
-}
-
-// formatDuration formats a duration in a human-readable way
-func formatDuration(d time.Duration) string {
-	if hours := int(d.Hours()); hours >= 1 {
-		return fmt.Sprintf("%dh", hours)
-	}
-	return fmt.Sprintf("%dm", int(d.Minutes()))
 }

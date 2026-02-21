@@ -16,9 +16,16 @@ polymarket:
     - sports
 
 monitor:
-  sensitivity: 0.5
+  window_size: 3
+  alpha: 0.1
+  ceiling: 10.0
+  threshold: 3.0
+  volume_24hr_min: 25000
+  volume_1wk_min: 100000
+  volume_1mo_min: 500000
   top_k: 10
-  enabled: true
+  cooldown_multiplier: 5
+  checkpoint_interval: 12
 
 telegram:
   bot_token: "test_token"
@@ -27,10 +34,7 @@ telegram:
 
 storage:
   max_events: 1000
-  max_snapshots_per_event: 100
-  max_file_size_mb: 100
-  file_path: "./data/test.json"
-  data_dir: "./data"
+  db_path: "./data/test.db"
 
 logging:
   level: "info"
@@ -60,8 +64,12 @@ logging:
 		t.Errorf("Unexpected poll interval: %v", cfg.Polymarket.PollInterval)
 	}
 
-	if cfg.Monitor.Sensitivity != 0.5 {
-		t.Errorf("Unexpected sensitivity: %f", cfg.Monitor.Sensitivity)
+	if cfg.Monitor.WindowSize != 3 {
+		t.Errorf("Unexpected window size: %d", cfg.Monitor.WindowSize)
+	}
+
+	if cfg.Monitor.Alpha != 0.1 {
+		t.Errorf("Unexpected alpha: %f", cfg.Monitor.Alpha)
 	}
 
 	if len(cfg.Polymarket.Categories) != 2 {
@@ -89,17 +97,24 @@ func TestValidateErrors(t *testing.T) {
 					Categories:   []string{"politics"},
 				},
 				Monitor: MonitorConfig{
-					Sensitivity: 0.5,
-					TopK:        10,
+					WindowSize:         3,
+					Alpha:              0.1,
+					Ceiling:            10.0,
+					Threshold:          3.0,
+					Volume24hrMin:      25000,
+					Volume1wkMin:       100000,
+					Volume1moMin:       500000,
+					TopK:               10,
+					CooldownMultiplier: 5,
+					CheckpointInterval: 12,
 				},
 				Telegram: TelegramConfig{
 					Enabled: true,
 					// Missing BotToken
 				},
 				Storage: StorageConfig{
-					MaxEvents:            1000,
-					MaxSnapshotsPerEvent: 100,
-					DBPath: "",
+					MaxEvents: 1000,
+					DBPath:    "",
 				},
 				Logging: LoggingConfig{
 					Level:  "info",
@@ -109,7 +124,7 @@ func TestValidateErrors(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "invalid sensitivity",
+			name: "invalid alpha",
 			config: &Config{
 				Polymarket: PolymarketConfig{
 					GammaAPIURL:  "https://example.com",
@@ -117,13 +132,51 @@ func TestValidateErrors(t *testing.T) {
 					Categories:   []string{"politics"},
 				},
 				Monitor: MonitorConfig{
-					Sensitivity: 1.5, // Invalid: > 1.0
-					TopK:        10,
+					WindowSize:         3,
+					Alpha:              1.5, // Invalid: > 1.0
+					Ceiling:            10.0,
+					Threshold:          3.0,
+					Volume24hrMin:      25000,
+					Volume1wkMin:       100000,
+					Volume1moMin:       500000,
+					TopK:               10,
+					CooldownMultiplier: 5,
+					CheckpointInterval: 12,
 				},
 				Storage: StorageConfig{
-					MaxEvents:            1000,
-					MaxSnapshotsPerEvent: 100,
-					DBPath: "",
+					MaxEvents: 1000,
+					DBPath:    "",
+				},
+				Logging: LoggingConfig{
+					Level:  "info",
+					Format: "json",
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid window size",
+			config: &Config{
+				Polymarket: PolymarketConfig{
+					GammaAPIURL:  "https://example.com",
+					PollInterval: 5 * time.Minute,
+					Categories:   []string{"politics"},
+				},
+				Monitor: MonitorConfig{
+					WindowSize:         0, // Invalid: must be at least 1
+					Alpha:              0.1,
+					Ceiling:            10.0,
+					Threshold:          3.0,
+					Volume24hrMin:      25000,
+					Volume1wkMin:       100000,
+					Volume1moMin:       500000,
+					TopK:               10,
+					CooldownMultiplier: 5,
+					CheckpointInterval: 12,
+				},
+				Storage: StorageConfig{
+					MaxEvents: 1000,
+					DBPath:    "",
 				},
 				Logging: LoggingConfig{
 					Level:  "info",

@@ -1,66 +1,65 @@
 # Polyoracle Configuration
 # Copy to config.yaml and set your Telegram credentials
 #
-# Profile: investor with limited time — tuned for maximum signal quality.
-# Every alert represents a large, statistically significant move on a deeply
-# liquid market. Expected: 0-3 high-conviction alerts per cycle.
+# SENSITIVITY PROFILES (choose one based on your monitoring needs):
+#
+# 1. SENSITIVE - Best for pro investors monitoring 8+ hrs/day
+#    - Catches every important signal (lower false negative rate)
+#    - Higher notification volume (expect 10-15 per cycle)
+#    - Recommended poll_interval: 2-5m
+#    Config: window_size=2, alpha=0.15, threshold=2.0, top_k=15
+#            volume_24hr_min=10000, volume_1wk_min=50000, volume_1mo_min=200000
+#            cooldown_multiplier=3
+#
+# 2. MODERATE (DEFAULT) - Best for regular users wanting timely updates
+#    - Balances signal quality and quantity
+#    - Moderate notification frequency (expect 5-10 per cycle)
+#    - Recommended poll_interval: 5-15m
+#    Config: window_size=4, alpha=0.1, threshold=3.0, top_k=10
+#            volume_24hr_min=25000, volume_1wk_min=100000, volume_1mo_min=500000
+#            cooldown_multiplier=5
+#
+# 3. STRICT - Best for noise-intolerant users seeking competitive edge
+#    - Only highly valuable, high-confidence signals
+#    - Minimal notifications (expect 0-5 per cycle)
+#    - Recommended poll_interval: 15-30m
+#    Config: window_size=5, alpha=0.08, threshold=4.5, top_k=5
+#            volume_24hr_min=50000, volume_1wk_min=250000, volume_1mo_min=1000000
+#            cooldown_multiplier=7
 
 polymarket:
-  poll_interval: 5m    # 5m: fastest practical polling — push notifications mean you act immediately
+  poll_interval: 5m
   limit: 5000
   categories:
     - geopolitics
     - tech
     - finance
     - world
-  # Volume filters (OR logic): pre-filter events before scoring.
-  # High thresholds ensure only deeply liquid markets generate signals —
-  # these markets have the best price discovery and most reliable SNR history.
-  volume_24hr_min: 25000       # $25K minimum 24hr volume — actively traded today
-  volume_1wk_min: 100000       # $100K minimum weekly volume — sustained liquidity
-  volume_1mo_min: 500000       # $500K minimum monthly volume — established markets
 
 monitor:
-  # sensitivity controls the composite signal quality threshold (0.0=permissive, 1.0=strict)
-  # Formula: min_score = sensitivity² × 0.05  (window-agnostic — SNR handles scale)
-  #
-  # Calibration guide (5m polling, $100K–$2M+ volume events):
-  #   0.5 → minScore=0.0125  — meaningful moves, moderate noise
-  #   0.7 → minScore=0.0245  — strict; only large moves on high-volume markets (set here)
-  #   0.8 → minScore=0.0320  — extreme; near-catalyst-level moves only
-  #
-  # Example: 9% drop at 91%→82% on $500K market → score ≈ 1.5+  (passes easily)
-  # Example: 5% move at 60%→65% on $100K market → score ≈ 0.04  (passes at 0.7)
-  # Example: 3% move on any market              → filtered by min_abs_change first
-  sensitivity: 0.7
-  top_k: 10   # Top 10 per cycle only — cuts alert fatigue without sacrificing coverage
+  # Detection algorithm parameters
+  window_size: 4              # Trajectory consistency window (SENSITIVE:2, MODERATE:4, STRICT:5)
+  alpha: 0.1                  # Depth tracking responsiveness (SENSITIVE:0.15, MODERATE:0.1, STRICT:0.08)
+  ceiling: 10.0               # Max score cap for outlier protection
+  threshold: 3.0              # Alert trigger threshold (SENSITIVE:2.0, MODERATE:3.0, STRICT:4.5)
 
-  # detection_intervals: how many poll_interval periods form the detection window.
-  # Effective window = (detection_intervals + 1) × poll_interval.
-  # At 5m polling: 8 → effective 45m window  [(8+1) × 5m = 45m]
-  #   — optimized for push-notification investors who act immediately
-  #   — 9 snapshots in window: sufficient for trajectory consistency
-  #   — catches news-driven moves at their typical Polymarket reaction speed
-  detection_intervals: 8
+  # Volume filters (OR logic - pass if ANY threshold met)
+  volume_24hr_min: 25000      # $25K minimum 24hr volume (SENSITIVE:10000, MODERATE:25000, STRICT:50000)
+  volume_1wk_min: 100000      # $100K minimum 1wk volume (SENSITIVE:50000, MODERATE:100000, STRICT:250000)
+  volume_1mo_min: 500000      # $500K minimum 1mo volume (SENSITIVE:200000, MODERATE:500000, STRICT:1000000)
 
-  # min_abs_change: minimum absolute probability change required (fraction, e.g. 0.05 = 5pp).
-  # Hard filter before KL/SNR scoring. Eliminates economically irrelevant micro-moves
-  # that KL divergence can inflate (especially near certainty boundaries).
-  # 10pp is the minimum threshold for a move to be worth an investor's attention.
-  min_abs_change: 0.1
-
-  # min_base_prob: minimum base (old) probability (fraction, e.g. 0.05 = 5%).
-  # Markets below 5% are in the tail zone where KL is structurally unreliable.
-  min_base_prob: 0.05
+  # Notification settings
+  top_k: 10                   # Max alerts per cycle (SENSITIVE:15, MODERATE:10, STRICT:5)
+  cooldown_multiplier: 5      # Cooldown = multiplier × poll_interval (SENSITIVE:3, MODERATE:5, STRICT:7)
+  checkpoint_interval: 12     # Persist state every N cycles
 
 telegram:
-  bot_token: "YOUR_BOT_TOKEN"   # Get from @BotFather
-  chat_id: "YOUR_CHAT_ID"       # Get from @userinfobot
+  bot_token: "YOUR_BOT_TOKEN"
+  chat_id: "YOUR_CHAT_ID"
   enabled: true
 
 storage:
-  max_events: 10000                       # Track up to 10000 events
-  max_snapshots_per_event: 2016           # 7 days × 12 snapshots/hr at 5m polling for SNR
+  max_events: 10000
 
 logging:
-  level: info    # debug, info, warn, error
+  level: info
